@@ -50,8 +50,75 @@ def _is_public_ip(value: Any) -> bool | None:
     )
 
 
+# Namespaces that are reserved, or reserved by convention, for names that never
+# leave the estate. A host under one of them is not attacker infrastructure on
+# the internet, whatever else it may be - which is the deterministic answer to
+# an agent that reports the corporate mail server as a suspicious external
+# domain because it saw it in a memory dump.
+_INTERNAL_SUFFIXES = (
+    ".lan",
+    ".local",
+    ".localdomain",
+    ".localhost",
+    ".corp",
+    ".internal",
+    ".intranet",
+    ".home.arpa",
+    ".in-addr.arpa",
+    ".test",
+    ".invalid",
+    ".example",
+)
+
+
+def _is_internal_namespace(value: Any) -> bool | None:
+    """True for a name that cannot resolve on the public internet."""
+    name = str(value).strip().lower().rstrip(".")
+    if not name:
+        return None
+    if "." not in name:
+        return True  # a single-label name is only meaningful inside a search domain
+    return name.endswith(_INTERNAL_SUFFIXES)
+
+
 PREDICATES: dict[str, Callable[[Any], bool | None]] = {
     "is_public_ip": _is_public_ip,
+    "is_internal_namespace": _is_internal_namespace,
+}
+
+
+# -------------------------------------------------------------------- hints
+#
+# A refusal is only useful if it tells the agent what to do next. A hint reads
+# the store and turns "not found" into "not found, but here is what is".
+
+
+def _related_indicator_values(store: Store, subject: dict, host: str | None) -> str:
+    """Name the indicators actually in evidence that are related to this one."""
+    claimed = str(next(iter(subject.values()), "")).strip().lower()
+    if not claimed:
+        return ""
+    values = {
+        str(record["fields"].get("value", "")).lower()
+        for record in store.query_records(kind="indicator", host=host)
+    }
+    related = sorted(
+        value
+        for value in values
+        if value and value != claimed and (value.endswith("." + claimed) or claimed.endswith("." + value))
+    )
+    if not related:
+        return ""
+    shown = ", ".join(related[:5])
+    more = f" (+{len(related) - 5} more)" if len(related) > 5 else ""
+    return (
+        f" Evidence does contain {shown}{more}."
+        " Bind to the name the evidence holds, or say why the parent domain follows from it."
+    )
+
+
+HINTS: dict[str, Callable[[Store, dict, str | None], str]] = {
+    "related_indicator_values": _related_indicator_values,
 }
 
 
@@ -68,6 +135,14 @@ class EvidenceCheck:
     kind: str  # record kind to query
     match: dict[str, str]  # record field -> subject key
     expect: str  # "at_least_one" or "none"
+    const: dict[str, Any] = field(default_factory=dict)  # record field -> fixed value
+    # What an empty result set means. REFUTED says the evidence is present and
+    # contradicts the claim. UNAVAILABLE says the evidence cannot settle it - the
+    # difference between "we looked and it is not there" and "this is the wrong
+    # place to look", which are not the same refusal and should not read alike.
+    absence_is: str = REFUTED
+    remedy: str = ""  # what would answer the question, said to the agent
+    hint: str = ""  # a HINTS key, consulted when the check fails
 
 
 @dataclass(frozen=True)
@@ -181,6 +256,86 @@ register(
 
 register(
     FindingType(
+        name="malicious_domain",
+        description="A domain name is attacker infrastructure used by this host.",
+        subject_keys=("domain",),
+        checks=(
+            PredicateCheck(
+                name="domain_is_not_internal_namespace",
+                rationale=(
+                    "A name under .lan, .local, .corp and friends cannot resolve on the public"
+                    " internet, so it is not external infrastructure. The corporate mail server"
+                    " sits in a memory dump looking exactly as suspicious as a C2 does."
+                ),
+                subject_key="domain",
+                predicate="is_internal_namespace",
+                expect=False,
+            ),
+            EvidenceCheck(
+                name="domain_appears_in_evidence",
+                rationale=(
+                    "The name has to be in the image at all. A domain that is close to one in"
+                    " evidence but not the one in evidence is the shape a hallucinated indicator"
+                    " takes, so near misses are named rather than tolerated."
+                ),
+                tool="indicators.extract",
+                kind="indicator",
+                match={"value": "domain"},
+                const={"type": "domain"},
+                expect="at_least_one",
+                absence_is=REFUTED,
+                hint="related_indicator_values",
+            ),
+            EvidenceCheck(
+                name="domain_appears_in_execution_context",
+                rationale=(
+                    "Presence in a raw carve proves the bytes were in RAM, nothing more - every"
+                    " domain in every mail the user ever opened is in there too. This check asks"
+                    " for the name in something that ran: a command line, a decoded payload, a"
+                    " connection. Absent that, the claim is unproven rather than wrong, which is"
+                    " the honest verdict on a domain sitting in a strings dump."
+                ),
+                tool="indicators.extract",
+                kind="indicator",
+                match={"value": "domain"},
+                const={"type": "domain", "execution_context": True},
+                expect="at_least_one",
+                absence_is=UNAVAILABLE,
+                remedy=(
+                    "The name is in the image but not in anything that executed."
+                    " Attribute it - process command lines, a decoded payload, a connection"
+                    " record, or a DNS event - then resubmit."
+                ),
+            ),
+        ),
+    )
+)
+
+register(
+    FindingType(
+        name="encoded_payload",
+        description="A process carried an encoded payload of a stated content.",
+        subject_keys=("blob_sha256",),
+        checks=(
+            EvidenceCheck(
+                name="payload_was_actually_decoded",
+                rationale=(
+                    "'A base64 gzip blob, probably a stager' is a guess about bytes that either"
+                    " decode or do not. The claim is admitted only against a payload this store"
+                    " unwrapped, so what it contains is readable rather than asserted."
+                ),
+                tool="decode.unwrap",
+                kind="decoded_payload",
+                match={"blob_sha256": "blob_sha256"},
+                expect="at_least_one",
+                absence_is=REFUTED,
+            ),
+        ),
+    )
+)
+
+register(
+    FindingType(
         name="observation",
         description=(
             "A bound statement of fact with no conclusion attached. The escape hatch for"
@@ -233,18 +388,24 @@ def _run_evidence_check(
         )
 
     criteria = {field_name: subject[key] for field_name, key in check.match.items()}
+    criteria.update(check.const)
     hits = store.query_records(kind=check.kind, host=host, where=criteria)
     described = ", ".join(f"{k}={v}" for k, v in criteria.items())
+
+    def missed(outcome: str, detail: str) -> CheckResult:
+        extra = check.remedy and f" {check.remedy}"
+        if check.hint:
+            extra += HINTS[check.hint](store, subject, host)
+        return CheckResult(check.name, outcome, detail + extra)
 
     if check.expect == "at_least_one":
         if hits:
             return CheckResult(
                 check.name, CORROBORATED, f"{check.tool} returned {len(hits)} row(s) for {described}"
             )
-        return CheckResult(
-            check.name,
-            REFUTED,
-            f"{check.tool} ran and returned no {check.kind} row for {described}",
+        return missed(
+            check.absence_is,
+            f"{check.tool} ran and returned no {check.kind} row for {described}.",
         )
 
     if check.expect == "none":

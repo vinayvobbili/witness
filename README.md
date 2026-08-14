@@ -47,10 +47,13 @@ compromised Windows 7 host from the SRL-2018 case.
 pip install -e .
 witness ingest --tool psscan  --input fixtures/wkstn05/psscan.txt  --host base-wkstn-05
 witness ingest --tool netscan --input fixtures/wkstn05/netscan.txt --host base-wkstn-05
+witness ingest --tool strings --input fixtures/wkstn05/strings.txt --host base-wkstn-05
+witness decode --host base-wkstn-05
+witness indicators --extract --host base-wkstn-05
 python scripts/prove.py
 ```
 
-`scripts/prove.py` submits six findings against that host and shows which survive.
+`scripts/prove.py` submits thirteen findings across two hosts and shows which survive.
 
 ## What the gate catches on real evidence
 
@@ -112,6 +115,64 @@ Two more properties fall out of this:
 `witness types` prints every finding type with the rationale for each check, so the matrix is
 readable rather than buried in code.
 
+## Decode rather than describe
+
+`FromBase64String("H4sIAAAA...")` in a carved command line is where an agent's
+confidence usually outruns its evidence. "A gzipped PowerShell stager, probably
+Empire, beaconing to some C2" is three guesses about bytes that simply decode.
+
+So `witness decode` unwraps instead of characterising. It reads records already in
+the store, undoes base64 and gzip in the standard library, recurses into whatever
+that reveals, and writes the result as new records — each traceable back through
+`derived_from` to the capture it came from. It names no framework and calls
+nothing malicious. It unwraps layers and stops.
+
+On `base-wkstn-05` the carve holds the same command line seven times at seven
+truncation lengths, which decodes to **one** payload rather than seven: the shorter
+captures stay in the store marked as prefixes of the longer one. That payload is
+gzip, and truncated, and says so. Inside it is a second base64 blob — 519 bytes of
+x86 that never was text — and inside that is a hostname.
+
+## The domain stack: fifteen candidates, one finding
+
+`witness indicators --extract` pulls domains, URLs, addresses and hashes out of
+any record and says where each came from. It assigns no score and keeps no
+allowlist of reputable sites, both of which would smuggle a judgement in as data.
+It records one distinction, because that one is checkable: whether an indicator
+was **carved** out of raw image bytes, where every domain in every mail the user
+ever opened also lives, or lifted from something that **ran**.
+
+A dotted token is not a hostname just because it is dotted. `IO.MemoryStream` from
+a PowerShell command, `Exchange.asmx` from a mail artifact and `base-mail.shiel`
+from a carve cut mid-word all match any regex loose enough to match a domain, and
+a report listing them as infrastructure has invented three indicators before
+anyone has drawn a conclusion. The last label has to be a real TLD; the IANA list
+is vendored under `data/` with its version header so extraction stays offline and
+identical everywhere. Since that list is a snapshot it can turn away a genuine
+name under a newer gTLD, so every suffix it declined is reported in the run output
+rather than left to read as a clean sweep.
+
+Three domains from that host, each stopped somewhere different:
+
+- `base-mail.shieldbase.lan` — **refuted.** A `.lan` name cannot resolve on the
+  public internet, so it is not external infrastructure, whatever else it is. The
+  corporate mail server sits in a memory dump looking exactly as suspicious as a
+  C2 does.
+- `www.venetodns.trade` — **unproven.** It is genuinely in the image, and it may
+  well be the C2. But in this capture it appears in a strings carve with nothing
+  tying it to anything that executed, and "found in the image" is not that tie.
+  The refusal says which evidence would settle it.
+- `aaa.stage.9231829.extranet.wagonwheelgifts.com` — **accepted.** It appears in
+  no plaintext anywhere in this evidence. It is only reachable by decoding a
+  carved command line twice, and `witness provenance` walks it back through
+  `indicators.extract` and `decode.unwrap` to the `strings` run and the image hash.
+
+The graded find-evil run this repo replaces reported `venetodns.trade` as confirmed
+C2 and never reported the embedded host at all. It reached that on prose reasoning
+about adjacency in a strings dump — reasoning that may be right, and that the
+evidence in the capture does not show. Both corrections come from the same rule
+applied without an opinion: bind it, or do not claim it.
+
 ## Evidence integrity
 
 Read-only is enforced by absence, not by policy. No module in `collectors/` exposes a write,
@@ -124,21 +185,35 @@ Unlike ledgers that chain only the findings, the parsed records and the tool cal
 same chain, so evidence cannot be rewritten under a finding that already cites it. A broken
 chain blocks every subsequent submission.
 
+Analysers that read records rather than files record the record ids they consumed, so a
+domain lifted out of a decoded payload stays three tool calls away from the image it came
+from instead of collapsing into "the tool said so". `witness provenance RECORD_ID` walks it.
+
+Findings are host-scoped from their evidence, not from their prose. A claim naming a host it
+did not bind is refused, and a finding whose bindings straddle two machines is refused as
+well — the checks have to run against one host, and which one cannot be a matter of wording.
+
 ## Rejections are part of the output
 
 Every claim stopped at either gate is written to the chain with the reason it died, and
 `witness rejections` prints them. A report is worth more when you can see what did not make it
-in — on the run above, one finding is admitted and eight are stopped, each with a recorded
+in — on the run above, three findings are admitted and ten are stopped, each with a recorded
 refutation.
 
 ## Status
 
-Slices 1 and 2 of a rebuild: the store, `psscan` / `netscan` / `malfind` collectors, both gates,
-the ledger, retraction, and the rejection log.
+Slices 1 to 3 of a rebuild: the store, `psscan` / `netscan` / `malfind` / `strings` collectors,
+the payload decoder, the indicator oracle, both gates, the ledger, retraction, the rejection
+log, and the provenance walk. No runtime dependencies — the only bundled data is the IANA TLD
+list.
+
+The indicator engine is in this repo, in one file you can read end to end. The submission this
+replaces imported it from a separate package, which meant anyone cloning the repo could not
+read the thing the repo was about.
 
 Collectors run in replay mode — they ingest captured output carrying its evidence hash — which
 is what makes the demo reproducible without a 3 GB image. Live mode is the same parsers behind a
-subprocess call and lands with the wider collector set.
+subprocess call.
 
 Known limits, stated rather than discovered later:
 
@@ -146,11 +221,20 @@ Known limits, stated rather than discovered later:
   renderer. The parser reads the tabular prefix and reports any line it cannot fit rather than
   dropping it silently; ingesting the CSV renderer instead is the proper fix. The empty-result
   fixture is a real capture, the with-hits fixture under `fixtures/synthetic/` is hand-written.
+- The vendored TLD list is a snapshot, so a name under a very new gTLD would be declined.
+  Declined suffixes are reported on every extraction run for exactly this reason.
+- The stage-1 payload on `base-wkstn-05` is a truncated gzip stream, because the carve that
+  captured it was cut at a page boundary. What inflated is kept and flagged `truncated`; the
+  bytes past the cut are not in this evidence and are not guessed at.
 - The chain is recomputed in full on every submission. Correct, and fine at case scale; it will
   want an incremental check before it sees a large timeline.
 
-Not yet built: disk and event-log collectors, indicator extraction, report generation, and the
-adversarial test suite.
+Not yet built: disk and event-log collectors, report generation, and the adversarial test suite.
+There is a specific reason the first of those is absent rather than stubbed. The SRL-2018 case
+does have a disk image with Sysmon and PowerShell Operational logs, and they would corroborate
+this host's execution chain — but no export of them exists in the captured evidence set here.
+A collector with no evidence behind it is a claim about coverage, and this repo's whole argument
+is that those get marked unavailable rather than shipped.
 
 ## Tests
 

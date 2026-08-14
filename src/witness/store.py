@@ -56,7 +56,10 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     evidence_sha256 TEXT,
     output_sha256   TEXT NOT NULL,
     collected_at    TEXT NOT NULL,
-    seq             INTEGER NOT NULL
+    seq             INTEGER NOT NULL,
+    -- Set when this call read records rather than an evidence file: the record
+    -- ids it consumed. Keeps a derived record traceable back to the raw capture.
+    derived_from    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS records (
@@ -130,7 +133,18 @@ class Store:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.db.commit()
+
+    def _migrate(self) -> None:
+        """Additive-only schema catch-up for stores opened by an older build.
+
+        Only ever adds nullable columns. Chain payloads are never touched, so a
+        store written before a column existed still verifies.
+        """
+        have = {row["name"] for row in self.db.execute("PRAGMA table_info(tool_calls)")}
+        if "derived_from" not in have:
+            self.db.execute("ALTER TABLE tool_calls ADD COLUMN derived_from TEXT")
 
     def close(self) -> None:
         self.db.close()
@@ -184,11 +198,16 @@ class Store:
         host: str | None = None,
         evidence_path: str | None = None,
         evidence_sha256: str | None = None,
+        derived_from: list[str] | None = None,
     ) -> str:
         """Record that a tool ran and what it emitted.
 
         The id is derived from content, not from a clock, so re-ingesting the
         same output on another machine produces the same id.
+
+        `derived_from` is for analysers that read records instead of an evidence
+        file. Naming the source records keeps the derivation auditable: anything
+        the analyser produces can be walked back to the capture it came from.
         """
         output_sha256 = sha256_text(output_text)
         tool_call_id = sha256_text(canonical([tool, argv, output_sha256]))[:12]
@@ -208,12 +227,14 @@ class Store:
             "evidence_sha256": evidence_sha256,
             "output_sha256": output_sha256,
         }
+        if derived_from:
+            payload["derived_from"] = sorted(derived_from)
         collected_at = _now()
         seq, _ = self._append("tool_call", payload)
         self.db.execute(
             "INSERT INTO tool_calls (tool_call_id, tool, argv, mode, host, evidence_path,"
-            " evidence_sha256, output_sha256, collected_at, seq)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " evidence_sha256, output_sha256, collected_at, seq, derived_from)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 tool_call_id,
                 tool,
@@ -225,6 +246,7 @@ class Store:
                 output_sha256,
                 collected_at,
                 seq,
+                canonical(sorted(derived_from)) if derived_from else None,
             ),
         )
         self.db.commit()
@@ -239,17 +261,35 @@ class Store:
     # --------------------------------------------------------------- records
 
     def add_records(self, tool_call_id: str, kind: str, rows: list[dict]) -> list[str]:
+        """Write parsed rows under a tool call.
+
+        One tool call may emit several kinds - an analyser that unwraps a payload
+        produces command lines, blobs and decoded text from the same run - so ids
+        are numbered across the whole call and identity is the row's content, not
+        its position. Re-running the same collector is then a no-op rather than a
+        second copy of the evidence.
+        """
         if not self.get_tool_call(tool_call_id):
             raise ValueError(f"no such tool call: {tool_call_id}")
+
+        existing: dict[tuple[str, str], str] = {}
+        next_index = 0
+        for row in self.db.execute(
+            "SELECT record_id, kind, content_hash FROM records WHERE tool_call_id = ?",
+            (tool_call_id,),
+        ):
+            existing[(row["kind"], row["content_hash"])] = row["record_id"]
+            next_index += 1
+
         record_ids: list[str] = []
-        for index, fields in enumerate(rows):
-            record_id = f"{tool_call_id}#{index:04d}"
-            if self.db.execute(
-                "SELECT record_id FROM records WHERE record_id = ?", (record_id,)
-            ).fetchone():
-                record_ids.append(record_id)
-                continue
+        for fields in rows:
             content_hash = sha256_text(canonical(fields))
+            seen = existing.get((kind, content_hash))
+            if seen:
+                record_ids.append(seen)
+                continue
+            record_id = f"{tool_call_id}#{next_index:04d}"
+            next_index += 1
             payload = {
                 "record_id": record_id,
                 "tool_call_id": tool_call_id,
@@ -262,6 +302,7 @@ class Store:
                 " VALUES (?, ?, ?, ?, ?, ?)",
                 (record_id, tool_call_id, kind, canonical(fields), content_hash, seq),
             )
+            existing[(kind, content_hash)] = record_id
             record_ids.append(record_id)
         self.db.commit()
         return record_ids
@@ -331,6 +372,34 @@ class Store:
             (record_id,),
         ).fetchone()
         return row["host"] if row else None
+
+    def provenance(self, record_id: str) -> list[dict]:
+        """Walk a record back through every derivation to the raw captures.
+
+        A domain lifted out of a decoded payload is three tool calls away from
+        the image it came from. This is how that distance stays visible instead
+        of collapsing into "the tool said so".
+        """
+        chain: list[dict] = []
+        seen: set[str] = set()
+        frontier = [record_id]
+        while frontier:
+            current = frontier.pop(0)
+            record = self.get_record(current)
+            if not record:
+                continue
+            call = self.get_tool_call(record["tool_call_id"])
+            if not call or call["tool_call_id"] in seen:
+                continue
+            seen.add(call["tool_call_id"])
+            chain.append(call)
+            if call.get("derived_from"):
+                frontier.extend(json.loads(call["derived_from"]))
+        # Derivation is a graph, not a line - an extractor may read both a raw
+        # capture and something derived from it. Order by when each call was
+        # written so the walk reads back as history.
+        chain.sort(key=lambda call: call["seq"], reverse=True)
+        return chain
 
     # -------------------------------------------------------------- findings
 

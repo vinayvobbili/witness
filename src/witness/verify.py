@@ -168,6 +168,32 @@ def _ground_subject(subject: dict, results: list[BindingResult]) -> list[str]:
     ]
 
 
+def _resolve_host(
+    store: Store, record_ids: list[str], declared: str | None
+) -> tuple[str | None, list[str]]:
+    """Work out which host a finding is about, and refuse if the answer is muddy.
+
+    Falsification checks are host-scoped, so the host has to come from the
+    evidence rather than from the prose of the claim - a sentence naming a host
+    is not checkable, and a finding whose bindings span two machines has no
+    single host for the checks to run against.
+    """
+    hosts = {store.host_for_record(rid) for rid in record_ids if store.get_record(rid)}
+    hosts.discard(None)
+    if len(hosts) > 1:
+        listed = ", ".join(sorted(hosts))
+        return None, [
+            f"bindings cite evidence from more than one host ({listed});"
+            " a finding is about one host, so split it"
+        ]
+    resolved = next(iter(hosts), None)
+    if declared is not None and resolved is not None and declared != resolved:
+        return None, [
+            f"finding declares host {declared!r} but its evidence comes from {resolved!r}"
+        ]
+    return declared if resolved is None else resolved, []
+
+
 def submit_finding(
     store: Store,
     *,
@@ -175,6 +201,7 @@ def submit_finding(
     claim: str,
     bindings: list[Binding],
     subject: dict | None = None,
+    host: str | None = None,
 ) -> tuple[Verdict, str | None]:
     """Both gates, then the ledger.
 
@@ -190,12 +217,18 @@ def submit_finding(
 
     if verdict.accepted:
         grounding_errors = _ground_subject(subject, verdict.results)
-        host = store.host_for_record(bindings[0].record_id) if bindings else None
-        falsification = falsify(store, finding_type, subject, host=host)
+        scope, host_errors = _resolve_host(store, [b.record_id for b in bindings], host)
+        falsification = falsify(store, finding_type, subject, host=scope)
         verdict.checks = falsification.results
         verdict.errors.extend(grounding_errors)
+        verdict.errors.extend(host_errors)
         verdict.errors.extend(falsification.errors)
-        verdict.accepted = not grounding_errors and not falsification.errors and falsification.passed
+        verdict.accepted = (
+            not grounding_errors
+            and not host_errors
+            and not falsification.errors
+            and falsification.passed
+        )
 
     if not verdict.accepted:
         store.add_rejection(finding_type=finding_type, claim=claim, reason=verdict.refutation)
@@ -223,7 +256,7 @@ def revalidate(store: Store) -> list[tuple[str, str]]:
         if item["status"] == "retracted":
             continue
         bindings = item["bindings"]
-        host = store.host_for_record(bindings[0]["record_id"]) if bindings else None
+        host, _ = _resolve_host(store, [b["record_id"] for b in bindings], None)
 
         rebound = verify(store, item["claim"], [Binding(**b) for b in bindings])
         if not rebound.accepted:

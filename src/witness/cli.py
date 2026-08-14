@@ -7,12 +7,14 @@ import json
 import sys
 from pathlib import Path
 
+from .collectors import decode, indicators, rawstrings
 from .collectors.volatility import PLUGINS, ingest_capture
 from .falsify import REGISTRY
 from .store import Store
 from .verify import Binding, revalidate, submit_finding
 
 DEFAULT_STORE = "witness.db"
+TOOLS = sorted([*PLUGINS, rawstrings.TOOL])
 
 
 def _parse_binding(spec: str) -> Binding:
@@ -27,14 +29,16 @@ def _parse_binding(spec: str) -> Binding:
 
 def cmd_ingest(args: argparse.Namespace) -> int:
     store = Store(args.store)
-    result = ingest_capture(
-        store,
-        plugin_name=args.tool,
+    common = dict(
         output_path=args.input,
         host=args.host,
         evidence_path=args.evidence_path,
         evidence_sha256=args.evidence_sha256,
     )
+    if args.tool == rawstrings.TOOL:
+        result = rawstrings.ingest_capture(store, **common)
+    else:
+        result = ingest_capture(store, plugin_name=args.tool, **common)
     print(f"tool call   {result['tool_call_id']}  ({result['plugin']}, mode=replay)")
     print(f"output hash {result['output_sha256']}")
     print(f"records     {result['records']} of kind {result['kind']}")
@@ -43,6 +47,64 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         for line in result["skipped"]:
             print(f"  - {line}")
     print(f"chain head  {store.head()}")
+    return 0
+
+
+def cmd_decode(args: argparse.Namespace) -> int:
+    store = Store(args.store)
+    result = decode.unwrap(store, host=args.host)
+    print(f"tool call     {result['tool_call_id']}  ({result['tool']}, mode=derived)")
+    print(f"read          {result['sources']} record(s)")
+    print(f"command lines {result['command_lines']}")
+    print(
+        f"blobs         {result['blobs']}"
+        f"  ({result['superseded']} superseded as prefixes of a longer capture)"
+    )
+    print(f"payloads      {result['payloads']} decoded across {result['stages']} stage(s)")
+    print(f"chain head    {store.head()}")
+    return 0
+
+
+def cmd_indicators(args: argparse.Namespace) -> int:
+    store = Store(args.store)
+    if args.extract:
+        result = indicators.extract(store, host=args.host)
+        by_type = ", ".join(f"{k}={v}" for k, v in sorted(result["by_type"].items())) or "none"
+        print(f"tool call   {result['tool_call_id']}  ({result['tool']}, mode=derived)")
+        print(f"read        {result['sources']} record(s)")
+        print(f"indicators  {result['indicators']}  ({by_type})")
+        print(f"            {result['in_execution_context']} seen in an execution context")
+        print(f"chain head  {store.head()}")
+        return 0
+
+    rows = store.query_records(kind=indicators.KIND, host=args.host)
+    if args.type:
+        rows = [r for r in rows if r["fields"]["type"] == args.type]
+    if args.executed:
+        rows = [r for r in rows if r["fields"]["execution_context"]]
+    for row in rows[: args.limit]:
+        fields = row["fields"]
+        marker = "executed" if fields["execution_context"] else "carved  "
+        print(f"{marker}  {fields['type']:<7} {fields['value']}")
+        print(f"          <- {fields['source_kind']} {fields['source_record_id']}")
+    print(f"-- {len(rows)} indicator(s)")
+    return 0
+
+
+def cmd_provenance(args: argparse.Namespace) -> int:
+    store = Store(args.store)
+    record = store.get_record(args.record_id)
+    if not record:
+        print(f"no such record: {args.record_id}")
+        return 1
+    print(f"{record['record_id']}  [{record['kind']}]")
+    print(f"  {json.dumps(record['fields'], sort_keys=True)[:200]}")
+    for step, call in enumerate(store.provenance(args.record_id), start=1):
+        argv = " ".join(json.loads(call["argv"]))
+        print(f"  {step}. {call['tool']}  ({call['mode']})")
+        print(f"     {argv}")
+        if call["evidence_path"]:
+            print(f"     evidence {call['evidence_path']}  sha256(output) {call['output_sha256'][:16]}...")
     return 0
 
 
@@ -146,12 +208,28 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ingest = sub.add_parser("ingest", help="parse captured tool output into records")
-    p_ingest.add_argument("--tool", required=True, choices=sorted(PLUGINS))
+    p_ingest.add_argument("--tool", required=True, choices=TOOLS)
     p_ingest.add_argument("--input", required=True, help="captured tool output file")
     p_ingest.add_argument("--host")
     p_ingest.add_argument("--evidence-path")
     p_ingest.add_argument("--evidence-sha256")
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_decode = sub.add_parser("decode", help="unwrap encoded payloads found in stored records")
+    p_decode.add_argument("--host")
+    p_decode.set_defaults(func=cmd_decode)
+
+    p_ind = sub.add_parser("indicators", help="extract or list indicators")
+    p_ind.add_argument("--extract", action="store_true", help="run the extractor over stored records")
+    p_ind.add_argument("--host")
+    p_ind.add_argument("--type", choices=["domain", "url", "ipv4", "md5", "sha1", "sha256"])
+    p_ind.add_argument("--executed", action="store_true", help="only those seen in an execution context")
+    p_ind.add_argument("--limit", type=int, default=100)
+    p_ind.set_defaults(func=cmd_indicators)
+
+    p_prov = sub.add_parser("provenance", help="walk a record back to the capture it came from")
+    p_prov.add_argument("record_id")
+    p_prov.set_defaults(func=cmd_provenance)
 
     p_records = sub.add_parser("records", help="query parsed records")
     p_records.add_argument("--kind")

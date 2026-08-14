@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Both gates, against real evidence from two SANS hosts.
 
-Act I  - gate 1, base-wkstn-05 (compromised): does the cited record say this?
-Act II - gate 2, base-wkstn-01 (clean baseline): what would prove this wrong,
-         and did anyone look?
+Act I   - gate 1, base-wkstn-05 (compromised): does the cited record say this?
+Act II  - gate 2, base-wkstn-01 (clean baseline): what would prove this wrong,
+          and did anyone look?
+Act III - the domain stack: fifteen suspicious-looking names in one image, and
+          the difference between a domain that was in RAM and one that ran.
 
 Every rejection below is a call the graded find-evil runs had to make by hand.
 """
@@ -17,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+from witness.collectors import decode, indicators, rawstrings  # noqa: E402
 from witness.collectors.volatility import ingest_capture  # noqa: E402
 from witness.store import Store  # noqa: E402
 from witness.verify import Binding, revalidate, submit_finding  # noqa: E402
@@ -51,8 +54,50 @@ def main() -> int:
                 f"  {host}  {result['plugin']:<17} {result['records']:>4} records"
                 f"   sha256 {result['output_sha256'][:12]}...   skipped {len(result['skipped'])}"
             )
+        strings = rawstrings.ingest_capture(
+            store,
+            output_path=FIXTURES / "wkstn05" / "strings.txt",
+            host="base-wkstn-05",
+            evidence_path="base-wkstn-05-memory.img",
+        )
+        print(
+            f"  base-wkstn-05  {'strings':<17} {strings['records']:>4} records"
+            f"   sha256 {strings['output_sha256'][:12]}...   skipped 0"
+        )
         print("\n  note: windows.malfind ran on base-wkstn-01 and returned zero rows.")
         print("        It was never run on base-wkstn-05. Those are different facts.")
+
+        rule("DERIVE  unwrap what is encoded, then extract indicators")
+        unwrapped = decode.unwrap(store, host="base-wkstn-05")
+        print(
+            f"  decode.unwrap      {unwrapped['command_lines']} carved command line(s),"
+            f" {unwrapped['blobs']} blob(s) ({unwrapped['superseded']} superseded as"
+            f" prefixes of a longer capture)"
+        )
+        print(
+            f"                     {unwrapped['payloads']} payload(s) decoded across"
+            f" {unwrapped['stages']} stage(s) - base64, then gzip, then base64 again"
+        )
+        for record in store.query_records(kind="decoded_payload", host="base-wkstn-05"):
+            fields = record["fields"]
+            head = fields["text"].splitlines()[0][:58]
+            print(
+                f"                     stage {fields['stage']}: {fields['container']}"
+                f"/{fields['content_type']}, {fields['decoded_bytes']} bytes"
+                f"{', truncated' if fields['truncated'] else ''}  {head!r}"
+            )
+        extracted = indicators.extract(store, host="base-wkstn-05")
+        by_type = ", ".join(f"{k}={v}" for k, v in sorted(extracted["by_type"].items()))
+        print(f"  indicators.extract {extracted['indicators']} indicator(s)  ({by_type})")
+        print(
+            f"                     {extracted['in_execution_context']} of them appeared in"
+            " something that executed; the rest were carved out of raw bytes"
+        )
+        print(
+            "                     declined as non-domains: "
+            + ", ".join("." + s for s in extracted["declined_suffixes"][:6])
+            + f" (+{max(0, len(extracted['declined_suffixes']) - 6)} more)"
+        )
         print(f"  chain head  {store.head()[:40]}...")
 
         def process(host: str, pid: int) -> str:
@@ -62,6 +107,13 @@ def main() -> int:
         def endpoint(host: str, **criteria) -> str:
             hits = store.query_records(kind="network_endpoint", host=host, where=criteria)
             return hits[0]["record_id"]
+
+        def indicator(value: str, host: str = "base-wkstn-05") -> str:
+            hits = store.query_records(kind="indicator", host=host, where={"value": value})
+            return hits[0]["record_id"]
+
+        embedded_c2 = "aaa.stage.9231829.extranet.wagonwheelgifts.com"
+        payload = store.query_records(kind="decoded_payload", host="base-wkstn-05")[0]
 
         cases = [
             (
@@ -145,6 +197,48 @@ def main() -> int:
                 "rundll32.exe (3720) on base-wkstn-05 contains injected code.",
                 [Binding(process("base-wkstn-05", 3720), "pid", 3720)],
                 {"pid": 3720},
+            ),
+            (
+                "III.1 TRUE     the C2 that only exists once you decode for it",
+                "malicious_domain",
+                "The in-memory PowerShell stager carries shellcode that beacons to "
+                f"{embedded_c2}.",
+                [Binding(indicator(embedded_c2), "value", embedded_c2)],
+                {"domain": embedded_c2},
+            ),
+            (
+                "III.2 UNPROVEN a domain in the image, tied to nothing that ran",
+                "malicious_domain",
+                "The host beaconed to external C2 www.venetodns.trade.",
+                [Binding(indicator("www.venetodns.trade"), "value", "www.venetodns.trade")],
+                {"domain": "www.venetodns.trade"},
+            ),
+            (
+                "III.3 REFUTED  the corporate mail server is not infrastructure",
+                "malicious_domain",
+                "base-mail.shieldbase.lan is attacker-controlled infrastructure.",
+                [
+                    Binding(
+                        indicator("base-mail.shieldbase.lan"),
+                        "value",
+                        "base-mail.shieldbase.lan",
+                    )
+                ],
+                {"domain": "base-mail.shieldbase.lan"},
+            ),
+            (
+                "III.4 TRUE     the payload claim, made against a payload we decoded",
+                "encoded_payload",
+                "A gzip-compressed base64 PowerShell payload was resident in memory;"
+                " it reflectively loads a second-stage shellcode blob.",
+                [
+                    Binding(
+                        payload["record_id"],
+                        "blob_sha256",
+                        payload["fields"]["blob_sha256"],
+                    )
+                ],
+                {"blob_sha256": payload["fields"]["blob_sha256"]},
             ),
         ]
 
