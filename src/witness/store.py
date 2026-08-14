@@ -17,7 +17,11 @@ from typing import Any
 
 GENESIS = "0" * 64
 
-_INT_RE = re.compile(r"^-?\d+$")
+# ASCII digits only. `\d` matches every decimal digit in Unicode, so `\d+` would
+# read "３７２０" as 3720 and let a claim written in fullwidth digits bind to a PID
+# it does not look like. This module refuses homoglyph domains for the same
+# reason; a homoglyph integer is not different in kind.
+_INT_RE = re.compile(r"^-?[0-9]+$")
 _HEX_RE = re.compile(r"^0[xX][0-9a-fA-F]+$")
 
 
@@ -236,7 +240,20 @@ class Store:
             for row in self.db.execute(
                 "SELECT seq, payload FROM chain WHERE kind = ? ORDER BY seq ASC", (kind,)
             ):
-                payload = json.loads(row["payload"])
+                # A payload edited past recognition is corruption to report, not
+                # an exception to raise. An integrity check that dies on damaged
+                # input is unavailable exactly when it is needed.
+                try:
+                    payload = json.loads(row["payload"])
+                except ValueError:
+                    problems.append(f"seq {row['seq']}: {kind} payload is not readable json")
+                    continue
+                if not isinstance(payload, dict) or key not in payload:
+                    problems.append(
+                        f"seq {row['seq']}: {kind} payload has no {key!r} - it is not a"
+                        f" {kind} entry any more"
+                    )
+                    continue
                 committed.add(payload[key])
                 live = self.db.execute(
                     f"SELECT * FROM {table} WHERE {key} = ?", (payload[key],)  # noqa: S608
@@ -248,6 +265,12 @@ class Store:
                     )
                     continue
                 for name in keys:
+                    if name not in payload:
+                        problems.append(
+                            f"seq {row['seq']}: {kind} {payload[key]} entry no longer"
+                            f" carries {name!r}"
+                        )
+                        continue
                     stored = live[name]
                     if isinstance(payload[name], (dict, list)):
                         stored = json.loads(stored)
@@ -266,6 +289,15 @@ class Store:
 
     def head(self) -> str:
         return self._head_hash()
+
+    def has_entry(self, entry_hash: str) -> bool:
+        """Is this chain state still in the chain? Cutting the tail is invisible
+        to the hash walk, so anything holding an older head can notice."""
+        return bool(
+            self.db.execute(
+                "SELECT 1 FROM chain WHERE entry_hash = ? LIMIT 1", (entry_hash,)
+            ).fetchone()
+        )
 
     def case_head(self) -> str:
         """The head of the case, ignoring reports written about the case.

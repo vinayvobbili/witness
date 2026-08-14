@@ -103,6 +103,18 @@ def _check_binding(store: Store, binding: Binding) -> BindingResult:
     claimed = coerce(binding.value)
     actual_c = coerce(actual)
 
+    # Python says True == 1, so without this a claim of 1 binds to a boolean
+    # field like `truncated` and reads in the ledger as though it had been
+    # checked against a number.
+    if isinstance(actual_c, bool) != isinstance(claimed, bool):
+        return BindingResult(
+            binding,
+            False,
+            actual=actual,
+            reason=f"record says {actual!r}, claim asserts {binding.value!r} - a boolean"
+            " field and a number are not the same value",
+        )
+
     if actual_c == claimed:
         return BindingResult(binding, True, actual=actual)
 

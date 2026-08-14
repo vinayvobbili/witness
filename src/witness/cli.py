@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from . import report as report_module
+from .report import safe
 from .collectors import decode, indicators, rawstrings
 from .collectors.volatility import PLUGINS, ingest_capture
 from .falsify import REGISTRY
@@ -64,6 +65,12 @@ def cmd_decode(args: argparse.Namespace) -> int:
         f"  ({result['superseded']} superseded as prefixes of a longer capture)"
     )
     print(f"payloads      {result['payloads']} decoded across {result['stages']} stage(s)")
+    if result["capped"]:
+        print(
+            f"capped        {result['capped']} payload(s) hit the"
+            f" {decode.MAX_DECODED_BYTES // (1024 * 1024)} MiB decode ceiling and are"
+            " marked capped, not complete"
+        )
     print(f"chain head    {store.head()}")
     return 0
 
@@ -77,6 +84,13 @@ def cmd_indicators(args: argparse.Namespace) -> int:
         print(f"read        {result['sources']} record(s)")
         print(f"indicators  {result['indicators']}  ({by_type})")
         print(f"            {result['in_execution_context']} seen in an execution context")
+        if result["non_ascii_hostnames"]:
+            print(
+                f"unreadable  {len(result['non_ascii_hostnames'])} domain-shaped"
+                " name(s) contain non-ASCII characters and were not extracted:"
+            )
+            for name in result["non_ascii_hostnames"][:5]:
+                print(f"              {name}")
         print(f"chain head  {store.head()}")
         return 0
 
@@ -88,8 +102,8 @@ def cmd_indicators(args: argparse.Namespace) -> int:
     for row in rows[: args.limit]:
         fields = row["fields"]
         marker = "executed" if fields["execution_context"] else "carved  "
-        print(f"{marker}  {fields['type']:<7} {fields['value']}")
-        print(f"          <- {fields['source_kind']} {fields['source_record_id']}")
+        print(f"{marker}  {fields['type']:<7} {safe(fields['value'])}")
+        print(f"          <- {safe(fields['source_kind'], 40)} {safe(fields['source_record_id'], 64)}")
     print(f"-- {len(rows)} indicator(s)")
     return 0
 
@@ -174,8 +188,8 @@ def cmd_rejections(args: argparse.Namespace) -> int:
     store = Store(args.store)
     rejections = store.list_rejections()
     for item in rejections:
-        print(f"[{item['finding_type']}] {item['claim']}")
-        print(f"    {item['reason']}")
+        print(f"[{safe(item['finding_type'], 64)}] {safe(item['claim'], 1000)}")
+        print(f"    {safe(item['reason'], 600)}")
     print(f"-- {len(rejections)} claim(s) stopped at the gate")
     return 0
 
@@ -184,11 +198,17 @@ def cmd_findings(args: argparse.Namespace) -> int:
     store = Store(args.store)
     findings = store.list_findings()
     for item in findings:
-        print(f"{item['finding_id']}  [{item['finding_type']}] {item['claim']}")
+        print(
+            f"{safe(item['finding_id'], 64)}  [{safe(item['finding_type'], 64)}]"
+            f" {safe(item['claim'], 1000)}"
+        )
         for binding in item["bindings"]:
-            print(f"    <- {binding['record_id']} {binding['field']}={binding['value']}")
+            print(
+                f"    <- {safe(binding['record_id'], 64)}"
+                f" {safe(binding['field'], 64)}={safe(binding['value'])}"
+            )
         for note in item["notes"]:
-            print(f"    note: {note}")
+            print(f"    note: {safe(note, 400)}")
     print(f"-- {len(findings)} finding(s) in the ledger")
     return 0
 
@@ -236,6 +256,8 @@ def cmd_verify_report(args: argparse.Namespace) -> int:
         print("               an issued report that has been edited by one character lands here")
         return 1
     print(f"issued         yes, from chain head {result['issued_from']}")
+    if not result["issued_state_still_in_chain"]:
+        print("chain          REWRITTEN - the state this was issued from is no longer in it")
     print(f"current head   {result['current_head']}")
     print(f"still current  {result['still_current']}"
           + ("" if result["still_current"] else "  (the case has moved on since it was issued)"))

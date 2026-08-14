@@ -33,6 +33,14 @@ KIND_PAYLOAD = "decoded_payload"
 
 MAX_STAGES = 4
 MIN_BLOB_CHARS = 24
+
+# Evidence is attacker-controlled. A 194 KB carved string can be a gzip member
+# that inflates to 200 MB, which without a ceiling is 1.7 GB of resident memory,
+# half a minute of CPU and a 200 MB row written into the store - from a payload
+# an attacker chose to leave in the image. So decoding stops at a byte count
+# rather than at the end of the stream, and a payload that hit the ceiling says
+# so in its own record instead of looking like a complete one.
+MAX_DECODED_BYTES = 8 * 1024 * 1024
 _PRINTABLE_RUN = re.compile(rb"[\x20-\x7e]{6,}")
 
 # `CommandLine=` is how a process parameter block appears once it has been
@@ -71,19 +79,24 @@ def _decode_bytes(blob: str) -> bytes | None:
         return None
 
 
-def _inflate(raw: bytes) -> tuple[bytes, bool]:
+def _inflate(raw: bytes) -> tuple[bytes, bool, bool]:
     """Inflate a gzip member, keeping whatever completed if the stream is cut short.
 
     Carved payloads are usually truncated. Returning the partial inflate with
     `truncated=True` is more useful than returning nothing, as long as the
     truncation is on the record.
+
+    Inflation stops at MAX_DECODED_BYTES. Returns (body, truncated, capped) -
+    two different reasons for a partial payload that should not read alike. The
+    stream was cut by whoever carved the image; the cap was applied here.
     """
     engine = zlib.decompressobj(16 + zlib.MAX_WBITS)
     try:
-        out = engine.decompress(raw)
+        out = engine.decompress(raw, MAX_DECODED_BYTES)
     except zlib.error:
-        return b"", True
-    return out, not engine.eof
+        return b"", True, False
+    capped = bool(engine.unconsumed_tail)
+    return out, (capped or not engine.eof), capped
 
 
 def _as_text(raw: bytes) -> tuple[str, str]:
@@ -186,10 +199,11 @@ def unwrap(store: Store, *, host: str | None = None, source_kinds: tuple[str, ..
                 continue
 
             if raw[:2] == b"\x1f\x8b":
-                body, truncated = _inflate(raw)
+                body, truncated, capped = _inflate(raw)
                 container = "gzip"
             else:
-                body, truncated = raw, False
+                body, capped = raw[:MAX_DECODED_BYTES], len(raw) > MAX_DECODED_BYTES
+                truncated = capped
                 container = "base64"
             text, content_type = _as_text(body)
             payloads.append(
@@ -199,6 +213,7 @@ def unwrap(store: Store, *, host: str | None = None, source_kinds: tuple[str, ..
                     "container": container,
                     "content_type": content_type,
                     "truncated": truncated,
+                    "capped": capped,
                     "decoded_bytes": len(body),
                     "text": text,
                     "sha256": sha256_text(text),
@@ -242,6 +257,7 @@ def unwrap(store: Store, *, host: str | None = None, source_kinds: tuple[str, ..
         "blobs": len(blobs),
         "superseded": sum(1 for b in blobs if b["superseded_by"]),
         "payloads": len(payloads),
+        "capped": sum(1 for p in payloads if p["capped"]),
         "stages": max((p["stage"] for p in payloads), default=0),
         "record_ids": written,
     }

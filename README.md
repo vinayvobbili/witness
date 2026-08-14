@@ -222,6 +222,59 @@ verify-report` answers two questions separately: were these exact bytes issued f
 store, and does what they say still hold. A report can be authentic and stale, and those
 should not read alike.
 
+## What has been tried against it
+
+A memory image is not trusted input. Everything in it was writable by whoever was on
+the box, and a good deal of it was written by the intruder on purpose. So the
+interesting question about a forensics agent is not whether it works on honest
+evidence — it is what a crafted string in the dump can make it say.
+
+```bash
+python scripts/adversarial.py
+```
+
+119 cases across nine families, each family stating one invariant and attacking it
+from as many angles as the surface has: text in the image that instructs the reader,
+bindings citing records that were never there, values that are almost the value,
+subjects the bindings never proved, hostile paths, decoder abuse, direct edits to the
+store, and payloads shaped to forge the report or repaint a terminal. The catalogue is
+data, so `pytest` and the script run exactly the same cases and adding an attack is
+adding a line.
+
+Writing it found seven defects, all fixed rather than documented:
+
+- **A gzip bomb in a carved string.** 194 KB of base64 in a `CommandLine=` string
+  inflated to 200 MB — 1.7 GB of resident memory, half a minute of CPU, and a 200 MB
+  row written into the store, from bytes an attacker chose to leave in the image.
+  Decoding now stops at a byte ceiling, and a payload that hit it says so rather than
+  looking complete.
+- **A newline in an evidence path forged a Findings section.** The report is markdown
+  built out of strings an attacker controls, so a line break in any of them invented
+  headings and showed findings that were never admitted. That is this project's own
+  failure mode appearing on the way out instead of on the way in, and it does not get
+  a pass for that. Untrusted text is now rendered as one inert line.
+- **The chain could be cut.** Delete the last entries along with the rows they
+  committed and what remains verifies perfectly — a hash chain has no way to know how
+  long it used to be. An issued report is the anchor that closes it: it names a state,
+  and `verify-report` now says so when the chain no longer contains that state.
+- **`verify-chain` raised on a mangled payload** instead of reporting it. An integrity
+  check that dies on damaged input is unavailable exactly when it is needed.
+- **A homoglyph domain was dropped in silence.** `www.venetodns.trаde` with a Cyrillic
+  а matches no ASCII pattern, so it was passed over without a word. Reporting 47
+  indicators while quietly ignoring one is worse than admitting one cannot be read;
+  these are now counted and surfaced, though deliberately not resolved to what they
+  imitate.
+- **`３７２０` in fullwidth digits compared equal to PID 3720**, because `\d` matches
+  every decimal digit in Unicode. A homoglyph integer is not different in kind from a
+  homoglyph domain.
+- **A claimed `1` bound to a boolean field**, because Python says `True == 1`.
+
+Two tolerances survived the pass and are deliberate: a case-only difference is the
+same Windows object and is admitted with a note in the ledger, and surrounding
+whitespace is stripped. Everything else compares exactly — a truncated name, a
+zero-width space, a fullwidth period, a Cyrillic е, a substring, a superstring and a
+PID off by an octet are all refused.
+
 ## Evidence integrity
 
 Read-only is enforced by absence, not by policy. No module in `collectors/` exposes a write,
@@ -257,10 +310,10 @@ refutation.
 
 ## Status
 
-Slices 1 to 4 of a rebuild: the store, `psscan` / `netscan` / `malfind` / `strings` collectors,
+Slices 1 to 5 of a rebuild: the store, `psscan` / `netscan` / `malfind` / `strings` collectors,
 the payload decoder, the indicator oracle, both gates, the ledger, retraction, the rejection
-log, the provenance walk, the report, and replay. No runtime dependencies — the only bundled
-data is the IANA TLD list.
+log, the provenance walk, the report, replay, and the adversarial catalogue. No runtime
+dependencies — the only bundled data is the IANA TLD list.
 
 The indicator engine is in this repo, in one file you can read end to end. The submission this
 replaces imported it from a separate package, which meant anyone cloning the repo could not
@@ -293,7 +346,14 @@ Known limits, stated rather than discovered later:
   registered there rather than shipped. Testing it against a shipped type would need evidence
   nobody captured.
 
-Not yet built: disk and event-log collectors, and the adversarial test suite.
+- Decoding stops at 8 MiB per payload. A genuine payload larger than that is reported
+  `capped` rather than silently halved, but it is still not fully read — raise the
+  ceiling deliberately rather than discover the cap in a report.
+- The homoglyph pass reports domain-shaped tokens it cannot read; it does not resolve
+  them. Mapping `trаde` to `trade` is a judgement about intent, and this extractor does
+  not make those.
+
+Not yet built: disk and event-log collectors.
 There is a specific reason the first of those is absent rather than stubbed. The SRL-2018 case
 does have a disk image with Sysmon and PowerShell Operational logs, and they would corroborate
 this host's execution chain — but no export of them exists in the captured evidence set here.
@@ -304,7 +364,9 @@ is that those get marked unavailable rather than shipped.
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest                          # 206 tests, 119 of them adversarial
+python scripts/prove.py         # both gates on real evidence, then report and replay
+python scripts/adversarial.py   # the attack catalogue, family by family
 ```
 
 ## License

@@ -116,6 +116,31 @@ def _looks_like_a_domain(value: str) -> bool:
     return value.rsplit(".", 1)[-1].lower() in TLDS
 
 
+# The domain pattern is ASCII by construction, so an internationalised name -
+# `www.venetodns.trаde` with a Cyrillic a, registered to look like a real one -
+# matches nothing and is passed over in silence. Silence is the wrong answer: a
+# homoglyph domain is a deliberate evasion, and an extractor that reports 47
+# indicators while quietly ignoring one is worse than one that admits it cannot
+# read it. These are counted and surfaced, not decoded - resolving a homoglyph
+# to what it imitates is a judgement, and this module does not make those.
+_NON_ASCII_SPLIT = re.compile(r"[\s<>\"'()\[\]{},;:|]+")
+
+
+def _non_ascii_hostnames(text: str) -> set[str]:
+    """Domain-shaped tokens that this extractor cannot read, so it can say so."""
+    out: set[str] = set()
+    for token in _NON_ASCII_SPLIT.split(text):
+        token = token.strip(".").rstrip("/")
+        if "." not in token or len(token) > 253:
+            continue
+        if not any(ord(char) > 127 for char in token):
+            continue
+        last = token.rsplit(".", 1)[-1]
+        if 2 <= len(last) <= 24 and last.isalpha():
+            out.add(token)
+    return out
+
+
 def _context(text: str, start: int, end: int) -> str:
     left = max(0, start - CONTEXT_CHARS)
     right = min(len(text), end + CONTEXT_CHARS)
@@ -176,6 +201,7 @@ def extract(store: Store, *, host: str | None = None) -> dict:
     source_ids: list[str] = []
     seen: set[tuple[str, str, bool]] = set()
     declined: set[str] = set()
+    unreadable: set[str] = set()
 
     for kind, field_name, execution_context in SOURCES:
         for record in store.query_records(kind=kind, host=host):
@@ -183,6 +209,7 @@ def extract(store: Store, *, host: str | None = None) -> dict:
             if not text:
                 continue
             source_ids.append(record["record_id"])
+            unreadable |= _non_ascii_hostnames(str(text))
             for indicator in extract_from_text(str(text), declined):
                 key = (indicator["type"], indicator["value"], execution_context)
                 if key in seen:
@@ -227,6 +254,7 @@ def extract(store: Store, *, host: str | None = None) -> dict:
         "by_type": by_type,
         "in_execution_context": sum(1 for row in rows if row["execution_context"]),
         "declined_suffixes": sorted(declined),
+        "non_ascii_hostnames": sorted(unreadable),
         "tld_list": TLD_LIST_VERSION,
         "record_ids": record_ids,
         "output_sha256": sha256_text(canonical(rows)),

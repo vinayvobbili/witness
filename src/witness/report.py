@@ -23,6 +23,7 @@ Two properties follow, and both matter more than the prose:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,6 +32,35 @@ from .store import Store, coerce, sha256_text
 from .verify import _resolve_host
 
 OUTCOME_MARK = {CORROBORATED: "corroborated", REFUTED: "refuted", UNAVAILABLE: "unavailable"}
+
+# Almost every string in this report came out of an image an attacker had write
+# access to: a carved command line, an indicator value, a process name, the path
+# the evidence was acquired from. Rendered as-is into markdown, a newline in any
+# of them forges a heading, and a report can be made to show findings that were
+# never admitted. That is the exact failure this project exists to stop, so it
+# does not get a pass because it happens on the way out rather than on the way in.
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f‎‏‪-‮⁦-⁩]")
+RENDER_LIMIT = 300
+
+
+def safe(value: Any, limit: int = RENDER_LIMIT) -> str:
+    """Render an untrusted value as one inert line of text.
+
+    Control characters go, including the bidirectional overrides that let a
+    string display in an order it is not stored in. Line breaks are collapsed,
+    because a line break is how markdown structure is forged. Backticks become
+    quotes so nothing escapes an inline-code span or opens a fence. Anything
+    overlong is cut with its true length stated, so the cut cannot be mistaken
+    for the value.
+    """
+    text = value if isinstance(value, str) else repr(value)
+    original = len(text)
+    text = _CONTROL.sub("�", text)
+    text = " ".join(text.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+    text = text.replace("`", "'")
+    if len(text) > limit:
+        text = text[:limit] + f"... [{original} chars, truncated in rendering]"
+    return text
 
 
 @dataclass
@@ -273,7 +303,7 @@ def render_markdown(report: Report) -> str:
 
     add("# Case report")
     add("")
-    add(f"Hosts: {', '.join(report.hosts) or 'none'}")
+    add(f"Hosts: {', '.join(safe(h, 80) for h in report.hosts) or 'none'}")
     add(f"Issued from chain head: {report.chain_head}")
     add(f"Chain: {'intact' if report.chain_ok else 'BROKEN'}")
     add(
@@ -292,23 +322,23 @@ def render_markdown(report: Report) -> str:
         add("")
         add("**This report is not issuable.** Something it depends on no longer holds:")
         for problem in report.problems:
-            add(f"- {problem}")
+            add(f"- {safe(problem, 500)}")
 
     add("")
     add("## Evidence")
     add("")
     for item in report.evidence:
-        where = f" on {item.host}" if item.host else ""
-        add(f"- **{item.tool}**{where} ({item.mode})")
-        add(f"  - command: `{item.argv}`")
+        where = f" on {safe(item.host, 80)}" if item.host else ""
+        add(f"- **{safe(item.tool, 80)}**{where} ({safe(item.mode, 20)})")
+        add(f"  - command: `{safe(item.argv)}`")
         if item.evidence_path:
-            add(f"  - evidence: {item.evidence_path}")
+            add(f"  - evidence: {safe(item.evidence_path)}")
         if item.evidence_sha256:
-            add(f"  - evidence sha256: {item.evidence_sha256}")
-        add(f"  - output sha256: {item.output_sha256}")
+            add(f"  - evidence sha256: {safe(item.evidence_sha256, 64)}")
+        add(f"  - output sha256: {safe(item.output_sha256, 64)}")
         add(f"  - records: {item.records}")
         for source in item.read_from:
-            add(f"  - read: {source}")
+            add(f"  - read: {safe(source, 80)}")
 
     add("")
     add(f"## Findings ({report.counts['findings']} admitted)")
@@ -316,28 +346,36 @@ def render_markdown(report: Report) -> str:
     if not report.findings:
         add("No finding survived both gates.")
     for finding in report.findings:
-        label = finding.finding_id if finding.status == "accepted" else (
-            f"{finding.finding_id} (RETRACTED)"
+        label = safe(finding.finding_id, 64) if finding.status == "accepted" else (
+            f"{safe(finding.finding_id, 64)} (RETRACTED)"
         )
-        add(f"### {label} - {finding.finding_type}")
+        add(f"### {label} - {safe(finding.finding_type, 64)}")
         add("")
-        add(finding.claim)
+        # The claim is the one long free-text field, so it is quoted rather than
+        # set flush: inside a blockquote a leading '#' is text, not a heading.
+        add(f"> {safe(finding.claim, 1000)}")
         add("")
         if finding.subject:
-            subject = ", ".join(f"{k}={v}" for k, v in sorted(finding.subject.items()))
+            subject = ", ".join(
+                f"{safe(k, 40)}={safe(v, 120)}" for k, v in sorted(finding.subject.items())
+            )
             add(f"- Subject: {subject}")
         if finding.host:
-            add(f"- Host: {finding.host}")
+            add(f"- Host: {safe(finding.host, 80)}")
         add("- Bound to:")
         for binding in finding.bindings:
+            where = f"{safe(binding.record_id, 64)} `{safe(binding.field, 64)}`"
             if binding.ok:
-                add(f"  - {binding.record_id} `{binding.field}` = {binding.actual!r}")
+                add(f"  - {where} = {safe(repr(binding.actual))}")
             else:
-                add(f"  - {binding.record_id} `{binding.field}` - **{binding.problem}**")
+                add(f"  - {where} - **{safe(binding.problem, 500)}**")
         if finding.checks:
             add("- What would have refuted this, and what the store said:")
             for check in finding.checks:
-                add(f"  - {check.name}: **{OUTCOME_MARK[check.outcome]}** - {check.detail}")
+                add(
+                    f"  - {safe(check.name, 80)}: **{OUTCOME_MARK[check.outcome]}**"
+                    f" - {safe(check.detail, 600)}"
+                )
                 rationale = rationale_for(finding.finding_type, check.name)
                 if rationale:
                     add(f"    - why this check exists: {rationale}")
@@ -347,11 +385,11 @@ def render_markdown(report: Report) -> str:
                 " statement of fact with no conclusion attached."
             )
         for line in finding.provenance:
-            add(f"- Provenance: {line}")
+            add(f"- Provenance: {safe(line, 400)}")
         for note in finding.notes:
-            add(f"- Note: {note}")
+            add(f"- Note: {safe(note, 400)}")
         if finding.retraction_reason:
-            add(f"- Retracted: {finding.retraction_reason}")
+            add(f"- Retracted: {safe(finding.retraction_reason, 500)}")
         add("")
 
     add(f"## Not admitted ({report.counts['rejections']})")
@@ -362,8 +400,8 @@ def render_markdown(report: Report) -> str:
     )
     add("")
     for item in report.rejections:
-        add(f"- [{item['finding_type']}] {item['claim']}")
-        add(f"  - stopped by: {item['reason']}")
+        add(f"- [{safe(item['finding_type'], 64)}] {safe(item['claim'], 1000)}")
+        add(f"  - stopped by: {safe(item['reason'], 600)}")
 
     if report.retractions:
         add("")
@@ -375,7 +413,7 @@ def render_markdown(report: Report) -> str:
         )
         add("")
         for item in report.retractions:
-            add(f"- {item['finding_id']}: {item['reason']}")
+            add(f"- {safe(item['finding_id'], 64)}: {safe(item['reason'], 500)}")
 
     add("")
     add("## Integrity")
@@ -386,10 +424,10 @@ def render_markdown(report: Report) -> str:
         " rewritten under a finding that already cites it."
     )
     add("")
-    add(f"- Chain head: {report.chain_head}")
+    add(f"- Chain head: {safe(report.chain_head, 64)}")
     add(f"- Chain verifies: {report.chain_ok}")
     for problem in report.chain_problems:
-        add(f"  - {problem}")
+        add(f"  - {safe(problem, 500)}")
     add(
         "- The head is derived from content alone, so re-deriving this case from the same"
         " captures reproduces this head. `witness replay` does exactly that."
@@ -486,12 +524,28 @@ def check_issued(store: Store, text: str) -> dict:
     digest = sha256_text(text)
     entry = store.find_report(digest)
     current = build(store)
+
+    # A hash chain can be cut. Delete the last entries along with the rows they
+    # committed and what remains verifies perfectly - the chain has no way to
+    # know how long it used to be. An issued report is the anchor that closes
+    # that: it names a state, and if the chain no longer contains that state,
+    # history was rewritten rather than extended.
+    reachable = bool(entry) and store.has_entry(entry["chain_head"])
+    problems = list(current.problems)
+    if entry and not reachable:
+        problems.insert(
+            0,
+            f"the chain no longer contains the state this report was issued from"
+            f" ({entry['chain_head'][:16]}...) - entries have been removed, not added",
+        )
+
     return {
         "report_sha256": digest,
         "issued": entry is not None,
         "issued_from": entry["chain_head"] if entry else None,
+        "issued_state_still_in_chain": reachable,
         "current_head": store.case_head(),
         "still_current": bool(entry) and render_markdown(current) == text,
-        "still_holds": current.issuable,
-        "problems": current.problems,
+        "still_holds": current.issuable and (not entry or reachable),
+        "problems": problems,
     }
