@@ -9,12 +9,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 GENESIS = "0" * 64
+
+_INT_RE = re.compile(r"^-?\d+$")
+_HEX_RE = re.compile(r"^0[xX][0-9a-fA-F]+$")
+
+
+def coerce(value: Any) -> Any:
+    """Make a claimed value comparable to a parsed one without softening it.
+
+    Numbers written as strings become numbers; hex offsets become integers.
+    Nothing else changes - in particular no substring or fuzzy matching.
+    """
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    text = str(value).strip()
+    if _INT_RE.match(text):
+        return int(text)
+    if _HEX_RE.match(text):
+        return int(text, 16)
+    return text
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chain (
@@ -54,8 +74,28 @@ CREATE TABLE IF NOT EXISTS findings (
     finding_type TEXT NOT NULL,
     claim        TEXT NOT NULL,
     bindings     TEXT NOT NULL,
+    subject      TEXT NOT NULL DEFAULT '{}',
     notes        TEXT NOT NULL,
     status       TEXT NOT NULL,
+    seq          INTEGER NOT NULL
+);
+
+-- Append-only corrections. A retracted finding is never deleted; the retraction
+-- sits after it in the chain so the history of what was believed stays readable.
+CREATE TABLE IF NOT EXISTS retractions (
+    retraction_id TEXT PRIMARY KEY,
+    finding_id    TEXT NOT NULL,
+    reason        TEXT NOT NULL,
+    seq           INTEGER NOT NULL
+);
+
+-- What the agent tried to claim and was stopped from claiming. Kept because a
+-- report is more trustworthy when you can see what did not make it in.
+CREATE TABLE IF NOT EXISTS rejections (
+    rejection_id TEXT PRIMARY KEY,
+    finding_type TEXT NOT NULL,
+    claim        TEXT NOT NULL,
+    reason       TEXT NOT NULL,
     seq          INTEGER NOT NULL
 );
 """
@@ -234,45 +274,96 @@ class Store:
         out["fields"] = json.loads(out["fields"])
         return out
 
-    def query_records(self, kind: str | None = None, where: dict | None = None) -> list[dict]:
-        sql = "SELECT * FROM records"
+    def query_records(
+        self, kind: str | None = None, where: dict | None = None, host: str | None = None
+    ) -> list[dict]:
+        """Query parsed records, optionally scoped to one host.
+
+        Host scoping matters: two images in one store must not corroborate each
+        other's findings.
+        """
+        sql = (
+            "SELECT r.*, t.host AS host FROM records r"
+            " JOIN tool_calls t ON t.tool_call_id = r.tool_call_id"
+        )
+        clauses: list[str] = []
         params: list[Any] = []
         if kind:
-            sql += " WHERE kind = ?"
+            clauses.append("r.kind = ?")
             params.append(kind)
-        sql += " ORDER BY seq ASC"
+        if host is not None:
+            clauses.append("t.host IS ?")
+            params.append(host)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY r.seq ASC"
+
         out = []
         for row in self.db.execute(sql, params):
             item = dict(row)
             item["fields"] = json.loads(item["fields"])
-            if where and any(item["fields"].get(k) != v for k, v in where.items()):
+            if where and any(
+                coerce(item["fields"].get(k)) != coerce(v) for k, v in where.items()
+            ):
                 continue
             out.append(item)
         return out
 
+    def tool_calls(self, tool: str | None = None, host: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM tool_calls"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tool:
+            clauses.append("tool = ?")
+            params.append(tool)
+        if host is not None:
+            clauses.append("host IS ?")
+            params.append(host)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY seq ASC"
+        return [dict(row) for row in self.db.execute(sql, params)]
+
+    def host_for_record(self, record_id: str) -> str | None:
+        row = self.db.execute(
+            "SELECT t.host AS host FROM records r JOIN tool_calls t"
+            " ON t.tool_call_id = r.tool_call_id WHERE r.record_id = ?",
+            (record_id,),
+        ).fetchone()
+        return row["host"] if row else None
+
     # -------------------------------------------------------------- findings
 
     def add_finding(
-        self, *, finding_type: str, claim: str, bindings: list[dict], notes: list[str]
+        self,
+        *,
+        finding_type: str,
+        claim: str,
+        bindings: list[dict],
+        notes: list[str],
+        subject: dict | None = None,
     ) -> str:
-        finding_id = sha256_text(canonical([finding_type, claim, bindings]))[:12]
+        subject = subject or {}
+        finding_id = sha256_text(canonical([finding_type, claim, bindings, subject]))[:12]
         payload = {
             "finding_id": finding_id,
             "finding_type": finding_type,
             "claim": claim,
             "bindings": bindings,
+            "subject": subject,
             "notes": notes,
             "status": "accepted",
         }
         seq, _ = self._append("finding", payload)
         self.db.execute(
             "INSERT OR REPLACE INTO findings (finding_id, finding_type, claim, bindings,"
-            " notes, status, seq) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " subject, notes, status, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 finding_id,
                 finding_type,
                 claim,
                 canonical(bindings),
+                canonical(subject),
                 canonical(notes),
                 "accepted",
                 seq,
@@ -281,11 +372,66 @@ class Store:
         self.db.commit()
         return finding_id
 
-    def list_findings(self) -> list[dict]:
+    def add_retraction(self, *, finding_id: str, reason: str) -> str:
+        """Retract an earlier finding. The finding row stays; this supersedes it."""
+        if not self.db.execute(
+            "SELECT finding_id FROM findings WHERE finding_id = ?", (finding_id,)
+        ).fetchone():
+            raise ValueError(f"no such finding: {finding_id}")
+        retraction_id = sha256_text(canonical([finding_id, reason]))[:12]
+        if self.db.execute(
+            "SELECT retraction_id FROM retractions WHERE retraction_id = ?", (retraction_id,)
+        ).fetchone():
+            return retraction_id
+        payload = {"retraction_id": retraction_id, "finding_id": finding_id, "reason": reason}
+        seq, _ = self._append("retraction", payload)
+        self.db.execute(
+            "INSERT INTO retractions (retraction_id, finding_id, reason, seq) VALUES (?, ?, ?, ?)",
+            (retraction_id, finding_id, reason, seq),
+        )
+        self.db.commit()
+        return retraction_id
+
+    def add_rejection(self, *, finding_type: str, claim: str, reason: str) -> str:
+        """Record a claim that did not make it in, and why."""
+        rejection_id = sha256_text(canonical([finding_type, claim, reason]))[:12]
+        if self.db.execute(
+            "SELECT rejection_id FROM rejections WHERE rejection_id = ?", (rejection_id,)
+        ).fetchone():
+            return rejection_id
+        payload = {
+            "rejection_id": rejection_id,
+            "finding_type": finding_type,
+            "claim": claim,
+            "reason": reason,
+        }
+        seq, _ = self._append("rejection", payload)
+        self.db.execute(
+            "INSERT INTO rejections (rejection_id, finding_type, claim, reason, seq)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (rejection_id, finding_type, claim, reason, seq),
+        )
+        self.db.commit()
+        return rejection_id
+
+    def list_findings(self, include_retracted: bool = True) -> list[dict]:
+        retracted = {
+            row["finding_id"]: row["reason"]
+            for row in self.db.execute("SELECT finding_id, reason FROM retractions")
+        }
         out = []
         for row in self.db.execute("SELECT * FROM findings ORDER BY seq ASC"):
             item = dict(row)
             item["bindings"] = json.loads(item["bindings"])
+            item["subject"] = json.loads(item["subject"])
             item["notes"] = json.loads(item["notes"])
+            if item["finding_id"] in retracted:
+                item["status"] = "retracted"
+                item["retraction_reason"] = retracted[item["finding_id"]]
+                if not include_retracted:
+                    continue
             out.append(item)
         return out
+
+    def list_rejections(self) -> list[dict]:
+        return [dict(row) for row in self.db.execute("SELECT * FROM rejections ORDER BY seq ASC")]

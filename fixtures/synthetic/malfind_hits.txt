@@ -1,0 +1,6 @@
+Volatility 3 Framework 2.27.0
+
+PID	Process	Start VPN	End VPN	Tag	Protection	CommitCharge	PrivateMemory	File output	Notes	Hexdump	Disasm
+
+2332	svchost.exe	0x1f0000	0x1f0fff	VadS	PAGE_EXECUTE_READWRITE	1	1	Disabled	MZ header	4d5a90000300	dec ebp
+2332	svchost.exe	0x2a0000	0x2a1fff	VadS	PAGE_EXECUTE_READWRITE	2	1	Disabled	N/A	558bec83ec20	push ebp

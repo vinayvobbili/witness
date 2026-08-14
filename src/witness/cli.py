@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 
 from .collectors.volatility import PLUGINS, ingest_capture
+from .falsify import REGISTRY
 from .store import Store
-from .verify import Binding, submit_finding
+from .verify import Binding, revalidate, submit_finding
 
 DEFAULT_STORE = "witness.db"
 
@@ -65,8 +66,16 @@ def cmd_records(args: argparse.Namespace) -> int:
 
 def cmd_submit(args: argparse.Namespace) -> int:
     store = Store(args.store)
+    subject = {}
+    for pair in args.subject or []:
+        key, value = pair.split("=", 1)
+        subject[key] = value
     verdict, finding_id = submit_finding(
-        store, finding_type=args.type, claim=args.claim, bindings=args.bind
+        store,
+        finding_type=args.type,
+        claim=args.claim,
+        bindings=args.bind,
+        subject=subject,
     )
     print(verdict.report())
     if finding_id:
@@ -74,6 +83,36 @@ def cmd_submit(args: argparse.Namespace) -> int:
         return 0
     print("  nothing was written to the ledger")
     return 1
+
+
+def cmd_types(args: argparse.Namespace) -> int:
+    for name in sorted(REGISTRY):
+        spec = REGISTRY[name]
+        keys = ", ".join(spec.subject_keys) or "-"
+        print(f"{name}\n    {spec.description}\n    subject keys: {keys}")
+        for check in spec.checks:
+            print(f"    check {check.name}: {check.rationale}")
+    return 0
+
+
+def cmd_revalidate(args: argparse.Namespace) -> int:
+    store = Store(args.store)
+    retracted = revalidate(store)
+    for finding_id, reason in retracted:
+        print(f"retracted {finding_id}")
+        print(f"    {reason}")
+    print(f"-- {len(retracted)} finding(s) retracted")
+    return 0
+
+
+def cmd_rejections(args: argparse.Namespace) -> int:
+    store = Store(args.store)
+    rejections = store.list_rejections()
+    for item in rejections:
+        print(f"[{item['finding_type']}] {item['claim']}")
+        print(f"    {item['reason']}")
+    print(f"-- {len(rejections)} claim(s) stopped at the gate")
+    return 0
 
 
 def cmd_findings(args: argparse.Namespace) -> int:
@@ -120,12 +159,23 @@ def main(argv: list[str] | None = None) -> int:
     p_records.add_argument("--limit", type=int, default=50)
     p_records.set_defaults(func=cmd_records)
 
-    p_submit = sub.add_parser("submit", help="submit a finding through the gate")
-    p_submit.add_argument("--type", required=True)
+    p_submit = sub.add_parser("submit", help="submit a finding through both gates")
+    p_submit.add_argument("--type", required=True, choices=sorted(REGISTRY))
     p_submit.add_argument("--claim", required=True)
     p_submit.add_argument("--bind", action="append", type=_parse_binding, default=[],
                           metavar="RECORD_ID:field=value")
+    p_submit.add_argument("--subject", action="append", metavar="key=value",
+                          help="what the finding is about; must be proved by a binding")
     p_submit.set_defaults(func=cmd_submit)
+
+    p_types = sub.add_parser("types", help="list finding types and what would refute each")
+    p_types.set_defaults(func=cmd_types)
+
+    p_reval = sub.add_parser("revalidate", help="re-run every check and retract what now fails")
+    p_reval.set_defaults(func=cmd_revalidate)
+
+    p_rej = sub.add_parser("rejections", help="list claims stopped at the gate, and why")
+    p_rej.set_defaults(func=cmd_rejections)
 
     p_findings = sub.add_parser("findings", help="list accepted findings")
     p_findings.set_defaults(func=cmd_findings)

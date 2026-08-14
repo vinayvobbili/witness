@@ -74,6 +74,44 @@ One case is accepted with a note rather than rejected: `Sysmon64.exe` against a 
 `sysmon64.exe`. Same Windows object, so the finding stands, and the ledger records that the
 value was case-normalised instead of quietly smoothing it over.
 
+## The second gate: what would prove this wrong?
+
+Quoting the evidence perfectly and drawing the wrong conclusion from it is the harder failure,
+and gate 1 does nothing about it. So every finding type declares, up front, the evidence that
+would refute it — as a query or a predicate, never as a second opinion from a model.
+
+Three outcomes, and the third is the one that matters:
+
+- **corroborated** — the refuting evidence was looked for and is not there.
+- **refuted** — the tool ran and shows the opposite. The claim dies and the attempt is logged.
+- **unavailable** — the tool that would settle it was never run. **This is not a pass.** A claim
+  nobody tried to disprove is not admitted; the agent is told which tool to run first.
+
+On `base-wkstn-01`, the clean baseline host, both of these are rejected — and both are calls the
+graded find-evil run had to make by hand:
+
+- *svchost.exe (2332) contains injected code.* `windows.malfind` ran and returned zero rows for
+  that PID. **Refuted.**
+- *svchost.exe beaconed to external C2 at 172.16.4.10:8080.* Every binding verifies — the
+  connection is real and the record says exactly this. `172.16.4.10` is RFC1918, so it is proxy
+  egress, not command and control. **Refuted.** This is the case that gate 1 alone waves through.
+
+The same injection claim against `base-wkstn-05`, where malfind was never run, comes back
+**unavailable** rather than refuted. Checks are host-scoped, so one image never corroborates a
+finding about another.
+
+Two more properties fall out of this:
+
+- **Retroactive.** `witness revalidate` re-runs every check over the ledger and retracts findings
+  that no longer survive, so one admitted before the refuting tool landed does not stay admitted.
+  Retraction is an append-only correction — the original finding is never deleted.
+- **The subject must be grounded.** A finding declares what it is about (`pid=2332`), and that
+  value must be one the bindings actually proved. Otherwise an agent could cite records for one
+  process and quietly run the checks against another.
+
+`witness types` prints every finding type with the rationale for each check, so the matrix is
+readable rather than buried in code.
+
 ## Evidence integrity
 
 Read-only is enforced by absence, not by policy. No module in `collectors/` exposes a write,
@@ -86,16 +124,32 @@ Unlike ledgers that chain only the findings, the parsed records and the tool cal
 same chain, so evidence cannot be rewritten under a finding that already cites it. A broken
 chain blocks every subsequent submission.
 
+## Rejections are part of the output
+
+Every claim stopped at either gate is written to the chain with the reason it died, and
+`witness rejections` prints them. A report is worth more when you can see what did not make it
+in — on the run above, one finding is admitted and eight are stopped, each with a recorded
+refutation.
+
 ## Status
 
-Slice 1 of a rebuild: the store, the Volatility `psscan` and `netscan` collectors, the gate,
-and the ledger. Collectors currently run in replay mode — they ingest captured output carrying
-its evidence hash — which is what makes the demo reproducible without a 3 GB image. Live mode
-is the same parsers behind a subprocess call and lands with the wider collector set.
+Slices 1 and 2 of a rebuild: the store, `psscan` / `netscan` / `malfind` collectors, both gates,
+the ledger, retraction, and the rejection log.
 
-Not yet built: the falsification matrix (each finding type carrying a mandatory refutation
-query, so a claim of process injection auto-retracts when `malfind` returns no rows for that
-PID), disk and event-log collectors, indicator extraction, report generation, and the
+Collectors run in replay mode — they ingest captured output carrying its evidence hash — which
+is what makes the demo reproducible without a 3 GB image. Live mode is the same parsers behind a
+subprocess call and lands with the wider collector set.
+
+Known limits, stated rather than discovered later:
+
+- `malfind`'s trailing `Hexdump` and `Disasm` columns are multi-line in Volatility's default
+  renderer. The parser reads the tabular prefix and reports any line it cannot fit rather than
+  dropping it silently; ingesting the CSV renderer instead is the proper fix. The empty-result
+  fixture is a real capture, the with-hits fixture under `fixtures/synthetic/` is hand-written.
+- The chain is recomputed in full on every submission. Correct, and fine at case scale; it will
+  want an incremental check before it sees a large timeline.
+
+Not yet built: disk and event-log collectors, indicator extraction, report generation, and the
 adversarial test suite.
 
 ## Tests

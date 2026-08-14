@@ -10,33 +10,14 @@ a correct refutation; a field comparison cannot.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .store import Store
-
-_INT_RE = re.compile(r"^-?\d+$")
-_HEX_RE = re.compile(r"^0[xX][0-9a-fA-F]+$")
+from .falsify import CORROBORATED, REFUTED, UNAVAILABLE, CheckResult, falsify
+from .store import Store, coerce
 
 # Volatility truncates ImageFileName to the 14 bytes the kernel structure holds.
 _TRUNCATION_WIDTH = 14
-
-
-def coerce(value: Any) -> Any:
-    """Make a claimed value comparable to a parsed one without softening it.
-
-    Numbers written as strings become numbers; hex offsets become integers.
-    Nothing else is changed - in particular no substring or fuzzy matching.
-    """
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    text = str(value).strip()
-    if _INT_RE.match(text):
-        return int(text)
-    if _HEX_RE.match(text):
-        return int(text, 16)
-    return text
 
 
 @dataclass
@@ -63,10 +44,25 @@ class Verdict:
     accepted: bool
     results: list[BindingResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    checks: list[CheckResult] = field(default_factory=list)
 
     @property
     def notes(self) -> list[str]:
         return [r.note for r in self.results if r.note]
+
+    @property
+    def refutation(self) -> str:
+        """One line saying why this died, suitable for the rejection log."""
+        for check in self.checks:
+            if check.outcome == REFUTED:
+                return f"{check.name}: {check.detail}"
+        for check in self.checks:
+            if check.outcome == UNAVAILABLE:
+                return f"{check.name}: {check.detail}"
+        for result in self.results:
+            if not result.ok:
+                return f"{result.binding.record_id}.{result.binding.field}: {result.reason}"
+        return "; ".join(self.errors)
 
     def report(self) -> str:
         lines = ["ACCEPTED" if self.accepted else "REJECTED"]
@@ -79,6 +75,10 @@ class Verdict:
                 lines.append(f"       {res.reason}")
             if res.note:
                 lines.append(f"       note: {res.note}")
+        for check in self.checks:
+            mark = {CORROBORATED: "ok  ", REFUTED: "KILL", UNAVAILABLE: "GAP "}[check.outcome]
+            lines.append(f"  {mark} check {check.name}: {check.outcome}")
+            lines.append(f"       {check.detail}")
         return "\n".join(lines)
 
 
@@ -153,21 +153,89 @@ def verify(store: Store, claim: str, bindings: list[Binding]) -> Verdict:
     return Verdict(accepted=accepted, results=results, errors=errors)
 
 
+def _ground_subject(subject: dict, results: list[BindingResult]) -> list[str]:
+    """Every subject value must be one the bindings actually proved.
+
+    Without this an agent could bind records for PID 3720 and then declare the
+    subject to be PID 4 - the checks would run against the wrong process and
+    corroborate a claim nobody made.
+    """
+    proved = [coerce(r.actual) for r in results if r.ok]
+    return [
+        f"subject {key}={value!r} is not proved by any binding on this finding"
+        for key, value in subject.items()
+        if coerce(value) not in proved
+    ]
+
+
 def submit_finding(
-    store: Store, *, finding_type: str, claim: str, bindings: list[Binding]
+    store: Store,
+    *,
+    finding_type: str,
+    claim: str,
+    bindings: list[Binding],
+    subject: dict | None = None,
 ) -> tuple[Verdict, str | None]:
-    """Verify, then write to the ledger only on success.
+    """Both gates, then the ledger.
+
+    Gate one: every cited field really says what the claim says it says.
+    Gate two: the evidence that would refute this claim was looked for and is
+    not there.
 
     Returns the verdict and the finding id, which is None when rejected. There
-    is no flag that writes an unverified finding anyway - that is the point.
+    is no flag that writes a finding that failed either gate - that is the point.
     """
+    subject = subject or {}
     verdict = verify(store, claim, bindings)
+
+    if verdict.accepted:
+        grounding_errors = _ground_subject(subject, verdict.results)
+        host = store.host_for_record(bindings[0].record_id) if bindings else None
+        falsification = falsify(store, finding_type, subject, host=host)
+        verdict.checks = falsification.results
+        verdict.errors.extend(grounding_errors)
+        verdict.errors.extend(falsification.errors)
+        verdict.accepted = not grounding_errors and not falsification.errors and falsification.passed
+
     if not verdict.accepted:
+        store.add_rejection(finding_type=finding_type, claim=claim, reason=verdict.refutation)
         return verdict, None
+
     finding_id = store.add_finding(
         finding_type=finding_type,
         claim=claim,
         bindings=[b.as_dict() for b in bindings],
         notes=verdict.notes,
+        subject=subject,
     )
     return verdict, finding_id
+
+
+def revalidate(store: Store) -> list[tuple[str, str]]:
+    """Re-run every check over the accepted ledger and retract what now fails.
+
+    This is what makes the matrix retroactive: a finding admitted before the
+    refuting tool was ingested does not stay admitted once that tool's output
+    lands. Returns the (finding_id, reason) pairs retracted by this pass.
+    """
+    retracted: list[tuple[str, str]] = []
+    for item in store.list_findings():
+        if item["status"] == "retracted":
+            continue
+        bindings = item["bindings"]
+        host = store.host_for_record(bindings[0]["record_id"]) if bindings else None
+
+        rebound = verify(store, item["claim"], [Binding(**b) for b in bindings])
+        if not rebound.accepted:
+            reason = f"bindings no longer verify: {rebound.refutation}"
+            store.add_retraction(finding_id=item["finding_id"], reason=reason)
+            retracted.append((item["finding_id"], reason))
+            continue
+
+        falsification = falsify(store, item["finding_type"], item["subject"], host=host)
+        if falsification.refuted:
+            check = falsification.refuted[0]
+            reason = f"refuted on revalidation by {check.name}: {check.detail}"
+            store.add_retraction(finding_id=item["finding_id"], reason=reason)
+            retracted.append((item["finding_id"], reason))
+    return retracted

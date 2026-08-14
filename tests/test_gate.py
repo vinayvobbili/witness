@@ -49,6 +49,7 @@ def test_the_real_kill_chain_is_accepted(store):
         Binding(record_for_pid(store, 3920), "ppid", 2676),
         Binding(record_for_pid(store, 1332), "ppid", 3920),
         Binding(record_for_pid(store, 3720), "ppid", 1332),
+        Binding(record_for_pid(store, 3720), "pid", 3720),
         Binding(record_for_pid(store, 3720), "image_file_name", "rundll32.exe"),
     ]
     verdict, finding_id = submit_finding(
@@ -57,6 +58,7 @@ def test_the_real_kill_chain_is_accepted(store):
         claim="WmiPrvSE.exe (2676) spawned powershell.exe (3920), which spawned "
         "powershell.exe (1332), which spawned rundll32.exe (3720).",
         bindings=bindings,
+        subject={"pid": 3720},
     )
     assert verdict.accepted, verdict.report()
     assert finding_id
@@ -87,7 +89,7 @@ def test_a_plausible_but_unsupported_claim_is_rejected(store):
 
     verdict, finding_id = submit_finding(
         store,
-        finding_type="c2_channel",
+        finding_type="external_c2",
         claim="The host beaconed to external C2 185.220.101.5.",
         bindings=[Binding("nonexistent#0001", "foreign_addr", "185.220.101.5")],
     )
@@ -99,7 +101,7 @@ def test_a_plausible_but_unsupported_claim_is_rejected(store):
 def test_a_claim_with_no_bindings_is_rejected(store):
     verdict, finding_id = submit_finding(
         store,
-        finding_type="assertion",
+        finding_type="observation",
         claim="This host is compromised.",
         bindings=[],
     )
@@ -112,7 +114,7 @@ def test_citing_a_real_record_but_the_wrong_field_value_is_rejected(store):
     """Mulder-style provenance would pass this: the tool call is real."""
     verdict, _ = submit_finding(
         store,
-        finding_type="process",
+        finding_type="process_present",
         claim="PID 2676 is malware.exe.",
         bindings=[Binding(record_for_pid(store, 2676), "image_file_name", "malware.exe")],
     )
@@ -123,7 +125,7 @@ def test_citing_a_real_record_but_the_wrong_field_value_is_rejected(store):
 def test_truncated_image_name_is_rejected_with_a_usable_hint(store):
     verdict, _ = submit_finding(
         store,
-        finding_type="process",
+        finding_type="process_present",
         claim="subject_srv.exe was running as PID 3548.",
         bindings=[Binding(record_for_pid(store, 3548), "image_file_name", "subject_srv.exe")],
     )
@@ -134,9 +136,13 @@ def test_truncated_image_name_is_rejected_with_a_usable_hint(store):
 def test_case_difference_is_accepted_but_recorded(store):
     verdict, finding_id = submit_finding(
         store,
-        finding_type="process",
+        finding_type="process_present",
         claim="Sysmon64.exe was running as PID 1892.",
-        bindings=[Binding(record_for_pid(store, 1892), "image_file_name", "Sysmon64.exe")],
+        bindings=[
+            Binding(record_for_pid(store, 1892), "image_file_name", "Sysmon64.exe"),
+            Binding(record_for_pid(store, 1892), "pid", 1892),
+        ],
+        subject={"pid": 1892},
     )
     assert verdict.accepted
     notes = store.list_findings()[0]["notes"]
@@ -164,7 +170,7 @@ def test_a_broken_chain_blocks_every_submission(store):
 
     verdict, finding_id = submit_finding(
         store,
-        finding_type="process",
+        finding_type="process_present",
         claim="WmiPrvSE.exe was running as PID 2676.",
         bindings=[Binding(record_for_pid(store, 2676), "image_file_name", "WmiPrvSE.exe")],
     )

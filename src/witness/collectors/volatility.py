@@ -55,6 +55,10 @@ class Plugin:
     name: str
     kind: str
     columns: list[tuple[str, str, Callable[[str], Any]]]  # header, field, converter
+    # malfind's trailing Hexdump/Disasm columns are multi-line in Volatility's
+    # default renderer, so rows may carry more cells than we model. Extra cells
+    # are ignored; short lines still go to `skipped` rather than being dropped.
+    trailing_ok: bool = False
 
     @property
     def headers(self) -> list[str]:
@@ -96,7 +100,27 @@ NETSCAN = Plugin(
     ],
 )
 
-PLUGINS = {"psscan": PSSCAN, "netscan": NETSCAN}
+MALFIND = Plugin(
+    name="windows.malfind",
+    kind="injection_hit",
+    columns=[
+        ("PID", "pid", _int),
+        ("Process", "process", _text),
+        ("Start VPN", "start_vpn", _hex),
+        ("End VPN", "end_vpn", _hex),
+        ("Tag", "tag", _text),
+        ("Protection", "protection", _text),
+        ("CommitCharge", "commit_charge", _int),
+        ("PrivateMemory", "private_memory", _int),
+        ("File output", "file_output", _text),
+        ("Notes", "notes", _text),
+        ("Hexdump", "hexdump", _text),
+        ("Disasm", "disasm", _text),
+    ],
+    trailing_ok=True,
+)
+
+PLUGINS = {"psscan": PSSCAN, "netscan": NETSCAN, "malfind": MALFIND}
 
 
 @dataclass
@@ -134,7 +158,9 @@ def parse(plugin: Plugin, output_text: str) -> ParseResult:
         if not line.strip():
             continue
         cells = line.split("\t")
-        if len(cells) != len(plugin.columns):
+        short = len(cells) < len(plugin.columns)
+        long = len(cells) > len(plugin.columns)
+        if short or (long and not plugin.trailing_ok):
             skipped.append(f"expected {len(plugin.columns)} columns, got {len(cells)}: {line[:80]!r}")
             continue
         record: dict = {}
