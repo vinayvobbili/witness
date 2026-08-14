@@ -53,7 +53,9 @@ witness indicators --extract --host base-wkstn-05
 python scripts/prove.py
 ```
 
-`scripts/prove.py` submits thirteen findings across two hosts and shows which survive.
+`scripts/prove.py` submits thirteen findings across two hosts, shows which survive,
+renders the report and then rebuilds the entire case from the captures to check that
+it comes back identical.
 
 ## What the gate catches on real evidence
 
@@ -173,6 +175,53 @@ about adjacency in a strings dump — reasoning that may be right, and that the
 evidence in the capture does not show. Both corrections come from the same rule
 applied without an opinion: bind it, or do not claim it.
 
+## The report, and getting the same one back
+
+A DFIR report is where a careful investigation usually stops being checkable. The
+findings were bound to evidence in a tool; the report is prose about them, and by the
+time a reader has it the two can only be compared by hand.
+
+`witness report` does not narrate. It renders from the ledger, and every value it
+prints is re-read from the store as it writes rather than copied from what the finding
+claimed when it was admitted. If a record has changed underneath an admitted finding,
+the mismatch appears on the line where the value would have gone and the report refuses
+to be issued. The rejections are in the body rather than an appendix, and each check
+carries the reason it was asked, so a reader sees not just that a claim survived but
+what it survived.
+
+There is no clock anywhere in the output. That is what makes the next part work.
+
+```bash
+witness --store case.db report --out report.md --issue
+witness --store case.db replay --inputs fixtures
+witness --store case.db verify-report report.md
+```
+
+Nothing in the store is numbered from a clock or a counter: a tool call id comes from
+the tool, its arguments and the hash of its output; a record id from the call that
+emitted it; a finding id from its type, claim, bindings and subject. So the chain head
+is a fingerprint of the case, and `witness replay` turns that from an argument into a
+command. It walks the chain of an existing store and performs every step again into an
+empty one — re-parsing each capture, re-running each derived analyser, re-submitting
+every finding **and every rejection** through both gates — then compares heads.
+
+On the thirteen-claim run above, all three findings, all ten refusals and the issued
+report come back byte for byte, from the captures alone. Two properties are worth
+pulling out:
+
+- **Captures are matched by hash, never by filename.** Rename every fixture and the
+  case still replays; change one character in one of them and it matches nothing and is
+  reported missing, rather than quietly replaying as itself under the name it used to
+  have.
+- **The refusals replay too.** A case that can only reproduce what it accepted has shown
+  its conclusions are reproducible while leaving its refusals as assertions — and on
+  this case the refusals are the more interesting half.
+
+An issued report is committed to the chain it was rendered from, so `witness
+verify-report` answers two questions separately: were these exact bytes issued from this
+store, and does what they say still hold. A report can be authentic and stale, and those
+should not read alike.
+
 ## Evidence integrity
 
 Read-only is enforced by absence, not by policy. No module in `collectors/` exposes a write,
@@ -184,6 +233,12 @@ any earlier row breaks every hash after it, and `witness verify-chain` recompute
 Unlike ledgers that chain only the findings, the parsed records and the tool calls are in the
 same chain, so evidence cannot be rewritten under a finding that already cites it. A broken
 chain blocks every subsequent submission.
+
+The hash walk alone is not enough, because the queryable copy of a record is a different row
+from the chain entry that admitted it — and a finding is checked against the queryable copy.
+So `verify-chain` also compares the two, which is what turns deleting the rows that
+corroborate a finding from "a fuller run came back empty" into what it is. The finding is
+still retracted, but for spoliation rather than for a refutation nobody observed.
 
 Analysers that read records rather than files record the record ids they consumed, so a
 domain lifted out of a decoded payload stays three tool calls away from the image it came
@@ -202,10 +257,10 @@ refutation.
 
 ## Status
 
-Slices 1 to 3 of a rebuild: the store, `psscan` / `netscan` / `malfind` / `strings` collectors,
+Slices 1 to 4 of a rebuild: the store, `psscan` / `netscan` / `malfind` / `strings` collectors,
 the payload decoder, the indicator oracle, both gates, the ledger, retraction, the rejection
-log, and the provenance walk. No runtime dependencies — the only bundled data is the IANA TLD
-list.
+log, the provenance walk, the report, and replay. No runtime dependencies — the only bundled
+data is the IANA TLD list.
 
 The indicator engine is in this repo, in one file you can read end to end. The submission this
 replaces imported it from a separate package, which meant anyone cloning the repo could not
@@ -226,10 +281,19 @@ Known limits, stated rather than discovered later:
 - The stage-1 payload on `base-wkstn-05` is a truncated gzip stream, because the carve that
   captured it was cut at a page boundary. What inflated is kept and flagged `truncated`; the
   bytes past the cut are not in this evidence and are not guessed at.
-- The chain is recomputed in full on every submission. Correct, and fine at case scale; it will
-  want an incremental check before it sees a large timeline.
+- The chain is recomputed in full on every submission, and now cross-checks the queryable
+  tables as well. Correct, and fine at case scale; it will want an incremental check before it
+  sees a large timeline.
+- Replay reproduces retractions by re-running the revalidation pass rather than by replaying
+  each retraction where it sits in the chain. A case whose retractions were interleaved with
+  later submissions can therefore replay to a different head — which the run reports as a
+  mismatch rather than papering over.
+- No check currently in the registry can flip from corroborated to refuted by appending
+  evidence, so the retroactive machinery is exercised in the tests against a finding type
+  registered there rather than shipped. Testing it against a shipped type would need evidence
+  nobody captured.
 
-Not yet built: disk and event-log collectors, report generation, and the adversarial test suite.
+Not yet built: disk and event-log collectors, and the adversarial test suite.
 There is a specific reason the first of those is absent rather than stubbed. The SRL-2018 case
 does have a disk image with Sysmon and PowerShell Operational logs, and they would corroborate
 this host's execution chain — but no export of them exists in the captured evidence set here.

@@ -6,6 +6,7 @@ Act II  - gate 2, base-wkstn-01 (clean baseline): what would prove this wrong,
           and did anyone look?
 Act III - the domain stack: fifteen suspicious-looking names in one image, and
           the difference between a domain that was in RAM and one that ran.
+Act IV  - the report, and whether anyone else can get the same one back.
 
 Every rejection below is a call the graded find-evil runs had to make by hand.
 """
@@ -19,8 +20,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+from witness import report  # noqa: E402
 from witness.collectors import decode, indicators, rawstrings  # noqa: E402
 from witness.collectors.volatility import ingest_capture  # noqa: E402
+from witness.replay import replay  # noqa: E402
 from witness.store import Store  # noqa: E402
 from witness.verify import Binding, revalidate, submit_finding  # noqa: E402
 
@@ -268,6 +271,23 @@ def main() -> int:
         for item in store.list_rejections():
             print(f"  [{item['finding_type']}] {item['claim']}")
             print(f"      {item['reason']}")
+
+        rule("REPORT  rendered from the ledger, re-checking every value on the way")
+        built = report.build(store)
+        text = report.render_markdown(built)
+        entry = report.issue(store, built, text)
+        print(f"  {built.summary}")
+        print(f"  issued from chain head {entry['chain_head']}")
+        print(f"  report sha256          {entry['report_sha256']}")
+        print(f"  {len(text.splitlines())} lines, no timestamp anywhere in them - the same case")
+        print("  renders the same bytes, so this hash is a fact about the case.")
+
+        rule("REPLAY  rebuild the whole case from the captures alone, then compare")
+        print("  Every id here is derived from content, never from a clock or a counter.")
+        print("  So a second run over the same captures is the same case or it is not.\n")
+        rebuilt = Store(Path(tmp) / "replayed.db")
+        outcome = replay(store, [FIXTURES], rebuilt)
+        print(outcome.report())
 
         rule("SUMMARY")
         print(f"  {accepted} of {len(cases)} submissions accepted")

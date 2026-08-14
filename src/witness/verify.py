@@ -231,7 +231,14 @@ def submit_finding(
         )
 
     if not verdict.accepted:
-        store.add_rejection(finding_type=finding_type, claim=claim, reason=verdict.refutation)
+        store.add_rejection(
+            finding_type=finding_type,
+            claim=claim,
+            reason=verdict.refutation,
+            bindings=[b.as_dict() for b in bindings],
+            subject=subject,
+            host=host,
+        )
         return verdict, None
 
     finding_id = store.add_finding(

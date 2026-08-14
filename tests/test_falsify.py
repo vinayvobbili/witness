@@ -11,7 +11,16 @@ from pathlib import Path
 import pytest
 
 from witness.collectors.volatility import ingest_capture
-from witness.falsify import CORROBORATED, REFUTED, UNAVAILABLE, falsify
+from witness.falsify import (
+    CORROBORATED,
+    REFUTED,
+    REGISTRY,
+    UNAVAILABLE,
+    EvidenceCheck,
+    FindingType,
+    falsify,
+    register,
+)
 from witness.store import Store
 from witness.verify import Binding, revalidate, submit_finding
 
@@ -225,8 +234,69 @@ def test_checks_do_not_cross_hosts(tmp_path):
 
 
 def test_new_evidence_retracts_an_earlier_finding(tmp_path):
-    """A finding admitted before the refuting tool landed does not stay admitted."""
-    store = Store(tmp_path / "r.db")
+    """A finding admitted before the refuting tool landed does not stay admitted.
+
+    Driven by appending evidence, which is the only way a case is allowed to
+    change. The finding type is registered here rather than shipped: no check
+    currently in the registry can flip from corroborated to refuted by appending,
+    so testing the retroactive machinery against a shipped type would need
+    evidence nobody captured.
+    """
+    clean = FindingType(
+        name="_test_process_is_clean",
+        description="No injected memory was found in this process.",
+        subject_keys=("pid",),
+        checks=(
+            EvidenceCheck(
+                name="malfind_shows_nothing_for_this_pid",
+                rationale="A clean bill of health is refuted by a single injected region.",
+                tool="windows.malfind",
+                kind="injection_hit",
+                match={"pid": "pid"},
+                expect="none",
+            ),
+        ),
+    )
+    register(clean)
+    try:
+        store = Store(tmp_path / "r.db")
+        ingest(store, "base-wkstn-01", "wkstn01", "netscan")
+        ingest(store, "base-wkstn-01", "wkstn01", "malfind")  # ran, found nothing
+
+        record = netscan_record(store, pid=2332)
+        _, finding_id = submit_finding(
+            store,
+            finding_type=clean.name,
+            claim="svchost.exe (2332) contains no injected memory.",
+            bindings=[Binding(record, "pid", 2332)],
+            subject={"pid": 2332},
+        )
+        assert finding_id
+        assert revalidate(store) == []
+
+        # A second malfind run over the same host finds two regions in that PID.
+        ingest(store, "base-wkstn-01", "synthetic", "malfind", name="malfind_hits")
+
+        retracted = revalidate(store)
+        assert [f for f, _ in retracted] == [finding_id]
+
+        findings = store.list_findings()
+        assert findings[0]["status"] == "retracted"
+        assert "refuted on revalidation" in findings[0]["retraction_reason"]
+        assert store.list_findings(include_retracted=False) == []
+    finally:
+        REGISTRY.pop(clean.name, None)
+
+
+def test_evidence_deleted_under_a_finding_reads_as_tampering_not_as_news(tmp_path):
+    """Removing the corroborating rows is not "a fuller run came back empty".
+
+    The queryable copy of a record is a different row from the chain entry that
+    admitted it, so a store can be edited without touching the chain. Both are
+    compared, and the finding is retracted for the right reason - spoliation,
+    rather than a refutation nobody actually observed.
+    """
+    store = Store(tmp_path / "spoil.db")
     ingest(store, "base-wkstn-01", "wkstn01", "netscan")
     ingest(store, "base-wkstn-01", "synthetic", "malfind", name="malfind_hits")
 
@@ -239,19 +309,35 @@ def test_new_evidence_retracts_an_earlier_finding(tmp_path):
         subject={"pid": 2332},
     )
     assert finding_id
-    assert revalidate(store) == []
 
-    # A fuller malfind run over the same host comes back empty for this PID.
     store.db.execute("DELETE FROM records WHERE kind = 'injection_hit'")
     store.db.commit()
 
+    ok, problems = store.verify_chain()
+    assert not ok
+    assert any("no longer in the store" in p for p in problems)
+
     retracted = revalidate(store)
     assert [f for f, _ in retracted] == [finding_id]
+    assert "audit chain is broken" in store.list_findings()[0]["retraction_reason"]
 
-    findings = store.list_findings()
-    assert findings[0]["status"] == "retracted"
-    assert "refuted on revalidation" in findings[0]["retraction_reason"]
-    assert store.list_findings(include_retracted=False) == []
+
+def test_a_record_edited_in_place_breaks_the_chain(tmp_path):
+    """The hash walk alone would not catch this; the cross-check does."""
+    store = Store(tmp_path / "edit.db")
+    ingest(store, "base-wkstn-01", "wkstn01", "netscan")
+    record = netscan_record(store, pid=2332)
+    assert store.verify_chain()[0]
+
+    store.db.execute(
+        "UPDATE records SET fields = ? WHERE record_id = ?",
+        ('{"pid": 4, "foreign_addr": "8.8.8.8"}', record),
+    )
+    store.db.commit()
+
+    ok, problems = store.verify_chain()
+    assert not ok
+    assert any("no longer matches the chain entry that committed it" in p for p in problems)
 
 
 def test_a_retraction_does_not_delete_the_finding(tmp_path):

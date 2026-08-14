@@ -94,12 +94,31 @@ CREATE TABLE IF NOT EXISTS retractions (
 
 -- What the agent tried to claim and was stopped from claiming. Kept because a
 -- report is more trustworthy when you can see what did not make it in.
+--
+-- The bindings are kept alongside the reason so a rejection can be re-submitted
+-- exactly as it was first attempted. A case that cannot replay its refusals only
+-- proves half of itself.
 CREATE TABLE IF NOT EXISTS rejections (
     rejection_id TEXT PRIMARY KEY,
     finding_type TEXT NOT NULL,
     claim        TEXT NOT NULL,
     reason       TEXT NOT NULL,
+    bindings     TEXT NOT NULL DEFAULT '[]',
+    subject      TEXT NOT NULL DEFAULT '{}',
+    host         TEXT,
     seq          INTEGER NOT NULL
+);
+
+-- A report is a claim about the case, so it gets the same treatment as any other
+-- claim: hashed, committed to the chain, and re-checkable afterwards. The entry
+-- records which chain state the report was issued from, so a report and a store
+-- that have drifted apart can be told from a report and a store that agree.
+CREATE TABLE IF NOT EXISTS reports (
+    report_id     TEXT PRIMARY KEY,
+    report_sha256 TEXT NOT NULL,
+    chain_head    TEXT NOT NULL,
+    summary       TEXT NOT NULL,
+    seq           INTEGER NOT NULL
 );
 """
 
@@ -146,6 +165,15 @@ class Store:
         if "derived_from" not in have:
             self.db.execute("ALTER TABLE tool_calls ADD COLUMN derived_from TEXT")
 
+        have = {row["name"] for row in self.db.execute("PRAGMA table_info(rejections)")}
+        for column, spec in (
+            ("bindings", "TEXT NOT NULL DEFAULT '[]'"),
+            ("subject", "TEXT NOT NULL DEFAULT '{}'"),
+            ("host", "TEXT"),
+        ):
+            if column not in have:
+                self.db.execute(f"ALTER TABLE rejections ADD COLUMN {column} {spec}")
+
     def close(self) -> None:
         self.db.close()
 
@@ -168,7 +196,13 @@ class Store:
         return int(cur.lastrowid), entry_hash
 
     def verify_chain(self) -> tuple[bool, list[str]]:
-        """Recompute every link. Any edit to any row shows up here."""
+        """Recompute every link, then check the store still agrees with it.
+
+        The hash walk alone catches an edit to the chain. It does not catch an
+        edit to the tables the chain committed - the queryable copy of a record
+        is a separate row from the chain entry that admitted it, and a finding is
+        checked against the queryable copy. So both are compared here.
+        """
         problems: list[str] = []
         prev = GENESIS
         for row in self.db.execute("SELECT * FROM chain ORDER BY seq ASC"):
@@ -181,10 +215,71 @@ class Store:
             if expected != row["entry_hash"]:
                 problems.append(f"seq {row['seq']}: entry_hash is not sha256(prev_hash + payload_hash)")
             prev = row["entry_hash"]
+        problems.extend(self._cross_check())
         return (not problems), problems
+
+    # What each chain kind committed, and where to find the queryable copy:
+    # (chain kind, table, primary key column, payload keys that must still match)
+    _COMMITTED = (
+        ("record", "records", "record_id", ("kind", "fields")),
+        ("tool_call", "tool_calls", "tool_call_id", ("tool", "mode", "host", "output_sha256")),
+        ("finding", "findings", "finding_id", ("finding_type", "claim", "bindings", "subject")),
+    )
+
+    def _cross_check(self) -> list[str]:
+        """Does every queryable row still say what the chain says it said?"""
+        problems: list[str] = []
+        for kind, table, key, keys in self._COMMITTED:
+            # By id, not by entry: a finding submitted twice is one row and two
+            # entries, and that is not a discrepancy.
+            committed: set[str] = set()
+            for row in self.db.execute(
+                "SELECT seq, payload FROM chain WHERE kind = ? ORDER BY seq ASC", (kind,)
+            ):
+                payload = json.loads(row["payload"])
+                committed.add(payload[key])
+                live = self.db.execute(
+                    f"SELECT * FROM {table} WHERE {key} = ?", (payload[key],)  # noqa: S608
+                ).fetchone()
+                if live is None:
+                    problems.append(
+                        f"seq {row['seq']}: {kind} {payload[key]} is in the chain"
+                        f" but no longer in the store"
+                    )
+                    continue
+                for name in keys:
+                    stored = live[name]
+                    if isinstance(payload[name], (dict, list)):
+                        stored = json.loads(stored)
+                    if stored != payload[name]:
+                        problems.append(
+                            f"seq {row['seq']}: {kind} {payload[key]} field {name!r} no longer"
+                            f" matches the chain entry that committed it"
+                        )
+            live_count = self.db.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]  # noqa: S608
+            if live_count != len(committed):
+                problems.append(
+                    f"{table} holds {live_count} row(s) but the chain committed"
+                    f" {len(committed)} - a row was added or removed without an entry"
+                )
+        return problems
 
     def head(self) -> str:
         return self._head_hash()
+
+    def case_head(self) -> str:
+        """The head of the case, ignoring reports written about the case.
+
+        A report quotes the chain state it describes. If it quoted the raw head,
+        issuing the report would move that head and no report could ever be
+        re-rendered byte for byte. Reports do not change the evidence, so they do
+        not change this value - which is what makes the hash of a report a fact
+        about the case rather than about the order someone ran the commands in.
+        """
+        row = self.db.execute(
+            "SELECT entry_hash FROM chain WHERE kind != 'report' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        return row["entry_hash"] if row else GENESIS
 
     # ------------------------------------------------------------ tool calls
 
@@ -381,19 +476,30 @@ class Store:
         of collapsing into "the tool said so".
         """
         chain: list[dict] = []
-        seen: set[str] = set()
+        seen_calls: set[str] = set()
+        seen_records: set[str] = set()
         frontier = [record_id]
         while frontier:
             current = frontier.pop(0)
+            if current in seen_records:
+                continue
+            seen_records.add(current)
             record = self.get_record(current)
             if not record:
                 continue
             call = self.get_tool_call(record["tool_call_id"])
-            if not call or call["tool_call_id"] in seen:
-                continue
-            seen.add(call["tool_call_id"])
-            chain.append(call)
-            if call.get("derived_from"):
+            if call and call["tool_call_id"] not in seen_calls:
+                seen_calls.add(call["tool_call_id"])
+                chain.append(call)
+            # A derived record that names the single record it came from is walked
+            # through that, not through everything its tool call happened to read.
+            # An extractor may sweep four record kinds in one pass; this domain
+            # still came from exactly one of them, and a trail that implicates the
+            # other three is a wrong answer dressed as thoroughness.
+            source = record["fields"].get("source_record_id")
+            if source:
+                frontier.append(source)
+            elif call and call.get("derived_from"):
                 frontier.extend(json.loads(call["derived_from"]))
         # Derivation is a graph, not a line - an extractor may read both a raw
         # capture and something derived from it. Order by when each call was
@@ -461,8 +567,25 @@ class Store:
         self.db.commit()
         return retraction_id
 
-    def add_rejection(self, *, finding_type: str, claim: str, reason: str) -> str:
-        """Record a claim that did not make it in, and why."""
+    def add_rejection(
+        self,
+        *,
+        finding_type: str,
+        claim: str,
+        reason: str,
+        bindings: list[dict] | None = None,
+        subject: dict | None = None,
+        host: str | None = None,
+    ) -> str:
+        """Record a claim that did not make it in, and why.
+
+        The bindings are stored so the attempt can be made again exactly as it
+        was made the first time. The id stays derived from what the rejection
+        *is* - the type, the claim and the reason it died - so stores written
+        before the attempt was kept still carry the same ids.
+        """
+        bindings = bindings or []
+        subject = subject or {}
         rejection_id = sha256_text(canonical([finding_type, claim, reason]))[:12]
         if self.db.execute(
             "SELECT rejection_id FROM rejections WHERE rejection_id = ?", (rejection_id,)
@@ -474,14 +597,89 @@ class Store:
             "claim": claim,
             "reason": reason,
         }
+        if bindings:
+            payload["bindings"] = bindings
+        if subject:
+            payload["subject"] = subject
+        if host:
+            payload["host"] = host
         seq, _ = self._append("rejection", payload)
         self.db.execute(
-            "INSERT INTO rejections (rejection_id, finding_type, claim, reason, seq)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (rejection_id, finding_type, claim, reason, seq),
+            "INSERT INTO rejections (rejection_id, finding_type, claim, reason, bindings,"
+            " subject, host, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                rejection_id,
+                finding_type,
+                claim,
+                reason,
+                canonical(bindings),
+                canonical(subject),
+                host,
+                seq,
+            ),
         )
         self.db.commit()
         return rejection_id
+
+    # --------------------------------------------------------------- reports
+
+    def add_report(self, *, report_sha256: str, summary: str) -> dict:
+        """Commit a rendered report to the chain it was rendered from.
+
+        Issuing a report appends an entry, which moves the head - so the entry
+        records the head the report was issued *from*. That is the value printed
+        in the report itself, and the one a later check compares against.
+        """
+        chain_head = self.case_head()
+        report_id = sha256_text(canonical([report_sha256, chain_head]))[:12]
+        existing = self.db.execute(
+            "SELECT * FROM reports WHERE report_id = ?", (report_id,)
+        ).fetchone()
+        if existing:
+            return dict(existing)
+        payload = {
+            "report_id": report_id,
+            "report_sha256": report_sha256,
+            "chain_head": chain_head,
+            "summary": summary,
+        }
+        seq, _ = self._append("report", payload)
+        self.db.execute(
+            "INSERT INTO reports (report_id, report_sha256, chain_head, summary, seq)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (report_id, report_sha256, chain_head, summary, seq),
+        )
+        self.db.commit()
+        return {
+            "report_id": report_id,
+            "report_sha256": report_sha256,
+            "chain_head": chain_head,
+            "summary": summary,
+            "seq": seq,
+        }
+
+    def find_report(self, report_sha256: str) -> dict | None:
+        """Look up an issued report by the hash of its bytes."""
+        row = self.db.execute(
+            "SELECT * FROM reports WHERE report_sha256 = ? ORDER BY seq DESC LIMIT 1",
+            (report_sha256,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_reports(self) -> list[dict]:
+        return [dict(row) for row in self.db.execute("SELECT * FROM reports ORDER BY seq ASC")]
+
+    def chain_entries(self) -> list[dict]:
+        """Every chain entry in order, payload parsed. The case as it happened."""
+        out = []
+        for row in self.db.execute("SELECT * FROM chain ORDER BY seq ASC"):
+            item = dict(row)
+            item["payload"] = json.loads(item["payload"])
+            out.append(item)
+        return out
+
+    def list_retractions(self) -> list[dict]:
+        return [dict(row) for row in self.db.execute("SELECT * FROM retractions ORDER BY seq ASC")]
 
     def list_findings(self, include_retracted: bool = True) -> list[dict]:
         retracted = {
@@ -503,4 +701,10 @@ class Store:
         return out
 
     def list_rejections(self) -> list[dict]:
-        return [dict(row) for row in self.db.execute("SELECT * FROM rejections ORDER BY seq ASC")]
+        out = []
+        for row in self.db.execute("SELECT * FROM rejections ORDER BY seq ASC"):
+            item = dict(row)
+            item["bindings"] = json.loads(item["bindings"])
+            item["subject"] = json.loads(item["subject"])
+            out.append(item)
+        return out

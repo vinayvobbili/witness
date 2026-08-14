@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
 
+from . import report as report_module
 from .collectors import decode, indicators, rawstrings
 from .collectors.volatility import PLUGINS, ingest_capture
 from .falsify import REGISTRY
+from .replay import replay
 from .store import Store
 from .verify import Binding, revalidate, submit_finding
 
@@ -190,6 +193,72 @@ def cmd_findings(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    store = Store(args.store)
+    built = report_module.build(store, host=args.host)
+    text = (
+        report_module.render_json(built)
+        if args.format == "json"
+        else report_module.render_markdown(built)
+    )
+
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        print(f"report      {args.out}")
+        print(f"sha256      {report_module.sha256_text(text)}")
+    else:
+        print(text, end="")
+
+    if args.issue:
+        if args.format == "json":
+            print("refusing to issue a json rendering; issue the markdown report")
+            return 1
+        try:
+            entry = report_module.issue(store, built, text)
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        print(f"issued      {entry['report_id']} from chain head {entry['chain_head']}")
+        print(f"summary     {entry['summary']}")
+    elif not built.issuable:
+        return 1
+    return 0
+
+
+def cmd_verify_report(args: argparse.Namespace) -> int:
+    store = Store(args.store)
+    text = Path(args.file).read_text(encoding="utf-8")
+    result = report_module.check_issued(store, text)
+
+    print(f"report sha256  {result['report_sha256']}")
+    if not result["issued"]:
+        print("issued         NO - these bytes were never committed to this chain")
+        print("               an issued report that has been edited by one character lands here")
+        return 1
+    print(f"issued         yes, from chain head {result['issued_from']}")
+    print(f"current head   {result['current_head']}")
+    print(f"still current  {result['still_current']}"
+          + ("" if result["still_current"] else "  (the case has moved on since it was issued)"))
+    print(f"still holds    {result['still_holds']}")
+    for problem in result["problems"]:
+        print(f"  - {problem}")
+    return 0 if result["still_holds"] else 1
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    source = Store(args.store)
+    target = Path(args.into) if args.into else None
+    if target and target.exists():
+        print(f"refusing to replay into an existing store: {target}")
+        return 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        into = Store(target or Path(tmp) / "replayed.db")
+        result = replay(source, args.inputs, into)
+        print(result.report())
+    return 0 if result.ok else 1
+
+
 def cmd_verify_chain(args: argparse.Namespace) -> int:
     store = Store(args.store)
     ok, problems = store.verify_chain()
@@ -257,6 +326,24 @@ def main(argv: list[str] | None = None) -> int:
 
     p_findings = sub.add_parser("findings", help="list accepted findings")
     p_findings.set_defaults(func=cmd_findings)
+
+    p_report = sub.add_parser("report", help="render the case from the ledger, re-checking as it goes")
+    p_report.add_argument("--host", help="narrow the report to one machine")
+    p_report.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    p_report.add_argument("--out", help="write to a file instead of stdout")
+    p_report.add_argument("--issue", action="store_true",
+                          help="commit the rendered report to the chain it came from")
+    p_report.set_defaults(func=cmd_report)
+
+    p_vreport = sub.add_parser("verify-report", help="was this report issued from this store, and does it still hold")
+    p_vreport.add_argument("file")
+    p_vreport.set_defaults(func=cmd_verify_report)
+
+    p_replay = sub.add_parser("replay", help="re-derive the whole case from the captures and compare")
+    p_replay.add_argument("--inputs", action="append", required=True, metavar="PATH",
+                          help="directory or file holding the captured tool output")
+    p_replay.add_argument("--into", help="keep the rebuilt store at this path")
+    p_replay.set_defaults(func=cmd_replay)
 
     p_chain = sub.add_parser("verify-chain", help="recompute the audit chain")
     p_chain.set_defaults(func=cmd_verify_chain)
