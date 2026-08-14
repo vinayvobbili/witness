@@ -20,9 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from witness import report  # noqa: E402
-from witness.collectors import decode, indicators, rawstrings  # noqa: E402
-from witness.collectors.volatility import ingest_capture  # noqa: E402
+from witness import casefile, report  # noqa: E402
 from witness.replay import replay  # noqa: E402
 from witness.store import Store  # noqa: E402
 from witness.verify import Binding, revalidate, submit_finding  # noqa: E402
@@ -39,39 +37,20 @@ def main() -> int:
         store = Store(Path(tmp) / "case.db")
 
         rule("INGEST  real Volatility 3 output, SANS SRL-2018")
-        plan = [
-            ("base-wkstn-05", "wkstn05", "psscan", None),
-            ("base-wkstn-05", "wkstn05", "netscan", None),
-            ("base-wkstn-01", "wkstn01", "netscan", None),
-            ("base-wkstn-01", "wkstn01", "malfind", None),
-        ]
-        for host, folder, tool, name in plan:
-            result = ingest_capture(
-                store,
-                plugin_name=tool,
-                output_path=FIXTURES / folder / f"{name or tool}.txt",
-                host=host,
-                evidence_path=f"{host}-memory.img",
-            )
-            print(
-                f"  {host}  {result['plugin']:<17} {result['records']:>4} records"
-                f"   sha256 {result['output_sha256'][:12]}...   skipped {len(result['skipped'])}"
-            )
-        strings = rawstrings.ingest_capture(
+        loaded = casefile.load(
             store,
-            output_path=FIXTURES / "wkstn05" / "strings.txt",
-            host="base-wkstn-05",
-            evidence_path="base-wkstn-05-memory.img",
-        )
-        print(
-            f"  base-wkstn-05  {'strings':<17} {strings['records']:>4} records"
-            f"   sha256 {strings['output_sha256'][:12]}...   skipped 0"
+            FIXTURES,
+            on_capture=lambda capture, result: print(
+                f"  {capture.host}  {capture.tool:<17} {result['records']:>4} records"
+                f"   sha256 {result['output_sha256'][:12]}..."
+                f"   skipped {len(result.get('skipped', []))}"
+            ),
         )
         print("\n  note: windows.malfind ran on base-wkstn-01 and returned zero rows.")
         print("        It was never run on base-wkstn-05. Those are different facts.")
 
         rule("DERIVE  unwrap what is encoded, then extract indicators")
-        unwrapped = decode.unwrap(store, host="base-wkstn-05")
+        unwrapped = loaded["derived"]["base-wkstn-05"]["decode"]
         print(
             f"  decode.unwrap      {unwrapped['command_lines']} carved command line(s),"
             f" {unwrapped['blobs']} blob(s) ({unwrapped['superseded']} superseded as"
@@ -89,7 +68,7 @@ def main() -> int:
                 f"/{fields['content_type']}, {fields['decoded_bytes']} bytes"
                 f"{', truncated' if fields['truncated'] else ''}  {head!r}"
             )
-        extracted = indicators.extract(store, host="base-wkstn-05")
+        extracted = loaded["derived"]["base-wkstn-05"]["indicators"]
         by_type = ", ".join(f"{k}={v}" for k, v in sorted(extracted["by_type"].items()))
         print(f"  indicators.extract {extracted['indicators']} indicator(s)  ({by_type})")
         print(

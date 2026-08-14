@@ -1,0 +1,24 @@
+Volatility 3 Framework 2.27.0
+
+Variable	Value
+
+Kernel Base	0xf80383a03000
+DTB	0x1aa000
+Symbols	file:///home/sansforensics/.local/share/volatility3/symbols/windows/ntkrnlmp.pdb/31C51B7D1C2545A88F69E13FC73E6894-1.json.xz
+Is64Bit	True
+IsPAE	False
+layer_name	0 WindowsIntel32e
+memory_layer	1 FileLayer
+KdVersionBlock	0xf80383d515a8
+Major/Minor	15.16299
+MachineType	34404
+KeNumberProcessors	2
+SystemTime	2021-09-16 03:05:13+00:00
+NtSystemRoot	C:\WINDOWS
+NtProductType	NtProductWinNt
+NtMajorVersion	10
+NtMinorVersion	0
+PE MajorOperatingSystemVersion	10
+PE MinorOperatingSystemVersion	0
+PE Machine	34404
+PE TimeDateStamp	Thu Dec  7 21:55:32 2017

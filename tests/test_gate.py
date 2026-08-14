@@ -130,7 +130,8 @@ def test_truncated_image_name_is_rejected_with_a_usable_hint(store):
         bindings=[Binding(record_for_pid(store, 3548), "image_file_name", "subject_srv.exe")],
     )
     assert not verdict.accepted
-    assert "truncated this field at 14 characters" in verdict.report()
+    assert "exactly 14 characters" in verdict.report()
+    assert "a fuller name may simply not be in this evidence" in verdict.report()
 
 
 def test_case_difference_is_accepted_but_recorded(store):

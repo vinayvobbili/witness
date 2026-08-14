@@ -120,7 +120,20 @@ MALFIND = Plugin(
     trailing_ok=True,
 )
 
-PLUGINS = {"psscan": PSSCAN, "netscan": NETSCAN, "malfind": MALFIND}
+# windows.info renders as one fact per row rather than a table of objects, but
+# the shape is still a header and TSV rows, so it parses the same way. Ingesting
+# it makes the host's own identity - OS build, capture time, processor count -
+# evidence a finding can bind to, instead of a label carried alongside the case.
+INFO = Plugin(
+    name="windows.info",
+    kind="host_fact",
+    columns=[
+        ("Variable", "variable", _text),
+        ("Value", "value", _text),
+    ],
+)
+
+PLUGINS = {"psscan": PSSCAN, "netscan": NETSCAN, "malfind": MALFIND, "info": INFO}
 
 
 @dataclass

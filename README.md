@@ -275,6 +275,48 @@ whitespace is stripped. Everything else compares exactly — a truncated name, a
 zero-width space, a fullwidth period, a Cyrillic е, a substring, a superstring and a
 PID off by an octet are all refused.
 
+## How accurate is it, and what does that cost?
+
+```bash
+python scripts/accuracy.py
+```
+
+An accuracy report with no cost column is an advertisement. A tool that refuses
+everything has perfect precision, so precision on its own is free; the number that
+has to be published next to it is how much true work it threw away getting there.
+
+The run puts 1,083 claims over both hosts through the real submission path. 519 the
+evidence supports, 564 it does not, in 29 classes of the way analysis actually goes
+wrong — a transposed PID, a name read one character short, the parent's PID asserted
+as the process's own, an RFC1918 peer called external C2, an injection claim on the
+host where nobody ran `malfind`.
+
+- **precision 100%** — of 519 admitted findings, 519 were supported
+- **recall 100%** — of 519 supported claims, 519 were admitted
+- **reason 100%** — of 564 refusals, 564 named the actual defect
+
+The third line is the one that separates accuracy from luck, and it is the one that
+found a defect. Fifty-seven claims were being refused correctly and logged for the
+wrong reason: their bindings verified, so the checks ran against a subject none of
+those bindings proved and truthfully reported that no process exists with that PID.
+True, and about the wrong process. `Verdict.refutation` now orders cause before
+consequence — a binding that does not verify, then anything wrong with how the
+finding is put together, then the checks.
+
+Two things keep the number from grading its own homework. Every claimed value is read
+off the captured tool output by a separate reader, never asked of the record it will be
+checked against. And the census classes line each raw row up with the record it became
+by position, so a row the collector dropped puts every later pair out of step and the
+run fails loudly rather than measuring one case fewer and still reporting a clean sweep.
+
+1,083 is classes times records, not 1,083 independent experiments — the per-class
+breakdown in [`docs/ACCURACY.md`](docs/ACCURACY.md) is the honest way to read it. That
+document also lists what the percentages cannot see, including the one that matters
+most: **`www.venetodns.trade` is this intrusion's real C2 and this tool refuses it**,
+because in the exported captures the name is in a raw carve and in nothing that
+executed. Right on this evidence, a miss on this case, and said in the report rather
+than rounded away.
+
 ## Evidence integrity
 
 Read-only is enforced by absence, not by policy. No module in `collectors/` exposes a write,
@@ -310,10 +352,14 @@ refutation.
 
 ## Status
 
-Slices 1 to 5 of a rebuild: the store, `psscan` / `netscan` / `malfind` / `strings` collectors,
-the payload decoder, the indicator oracle, both gates, the ledger, retraction, the rejection
-log, the provenance walk, the report, replay, and the adversarial catalogue. No runtime
-dependencies — the only bundled data is the IANA TLD list.
+Slices 1 to 6 of a rebuild: the store, `info` / `psscan` / `netscan` / `malfind` / `strings`
+collectors, the payload decoder, the indicator oracle, both gates, the ledger, retraction, the
+rejection log, the provenance walk, the report, replay, the adversarial catalogue, and the
+accuracy corpus. No runtime dependencies — the only bundled data is the IANA TLD list.
+
+The captures that make up the shipped case are declared once, in `casefile.py`, because three
+things need the same answer to "what evidence is in here" and a list maintained in three places
+drifts.
 
 The indicator engine is in this repo, in one file you can read end to end. The submission this
 replaces imported it from a separate package, which meant anyone cloning the repo could not
@@ -352,6 +398,16 @@ Known limits, stated rather than discovered later:
 - The homoglyph pass reports domain-shaped tokens it cannot read; it does not resolve
   them. Mapping `trаde` to `trade` is a judgement about intent, and this extractor does
   not make those.
+- The accuracy numbers are measured on two hosts, because two is what the SANS set
+  exported — not because two is enough. No claim is made about a third.
+- There is not one routable foreign address in either host's connection table, so the
+  admitting branch of the `external_c2` predicate is exercised by unit tests rather than
+  by this case. Refusing 168 internal peers called C2 is a real result about a real
+  failure mode; it is not evidence that a true external C2 would be admitted.
+- A rejection is identified by its type, claim and reason, so the same claim refused the
+  same way twice is one ledger line rather than two. On the accuracy run that turns 564
+  refusals into 406 entries. Deliberate — a report should not print one refusal ninety
+  times — and stated because a count that quietly deduplicates reads higher than it is.
 
 Not yet built: disk and event-log collectors.
 There is a specific reason the first of those is absent rather than stubbed. The SRL-2018 case
@@ -364,9 +420,10 @@ is that those get marked unavailable rather than shipped.
 
 ```bash
 pip install -e ".[dev]"
-pytest                          # 206 tests, 119 of them adversarial
+pytest                          # 245 tests, 119 adversarial cases, 1,083 accuracy claims
 python scripts/prove.py         # both gates on real evidence, then report and replay
 python scripts/adversarial.py   # the attack catalogue, family by family
+python scripts/accuracy.py      # precision, recall, and the reason each refusal gave
 ```
 
 ## License

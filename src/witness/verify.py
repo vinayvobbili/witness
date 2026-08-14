@@ -52,17 +52,31 @@ class Verdict:
 
     @property
     def refutation(self) -> str:
-        """One line saying why this died, suitable for the rejection log."""
+        """One line saying why this died, suitable for the rejection log.
+
+        Order matters, and it is cause before consequence. A binding that does
+        not verify is the most basic thing that can be wrong, then anything
+        wrong with how the finding is put together, and only then the checks.
+
+        The checks come last because they are run against the finding's subject,
+        and if the subject is unsound the checks answer a real question about the
+        wrong thing. A finding whose bindings prove PID 3720 while its subject
+        says PID 13720 dies of an unproved subject; recording "psscan returned no
+        row for 13720" would be true, and would send the next reader looking for
+        a process instead of at the claim.
+        """
+        for result in self.results:
+            if not result.ok:
+                return f"{result.binding.record_id}.{result.binding.field}: {result.reason}"
+        if self.errors:
+            return "; ".join(self.errors)
         for check in self.checks:
             if check.outcome == REFUTED:
                 return f"{check.name}: {check.detail}"
         for check in self.checks:
             if check.outcome == UNAVAILABLE:
                 return f"{check.name}: {check.detail}"
-        for result in self.results:
-            if not result.ok:
-                return f"{result.binding.record_id}.{result.binding.field}: {result.reason}"
-        return "; ".join(self.errors)
+        return ""
 
     def report(self) -> str:
         lines = ["ACCEPTED" if self.accepted else "REJECTED"]
@@ -140,8 +154,9 @@ def _check_binding(store: Store, binding: Binding) -> BindingResult:
         and claimed.startswith(actual_c)
     ):
         reason += (
-            f" - the tool truncated this field at {_TRUNCATION_WIDTH} characters."
-            " Bind to what the tool emitted; the fuller name is not in this evidence."
+            f" - the recorded value is exactly {_TRUNCATION_WIDTH} characters, the width at"
+            " which Volatility truncates this field. Bind to what the tool emitted; a fuller"
+            " name may simply not be in this evidence."
         )
     return BindingResult(binding, False, reason=reason, actual=actual)
 
