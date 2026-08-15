@@ -14,7 +14,7 @@ the claim says it says.**
 ## Run it
 
 ```bash
-git clone <this repo> && cd witness
+git clone https://github.com/vinayvobbili/witness && cd witness
 python demo.py
 ```
 

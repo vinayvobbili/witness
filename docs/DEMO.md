@@ -16,7 +16,7 @@ clone so the first frame is somebody arriving at this repository the way a
 stranger does.
 
 ```bash
-git clone <this repo> && cd witness
+git clone https://github.com/vinayvobbili/witness && cd witness
 python demo.py --pace 10
 ```
 
