@@ -2,6 +2,7 @@
 
 **A DFIR agent that can only report what it can prove a tool said.**
 
+[![CI](https://github.com/vinayvobbili/witness/actions/workflows/ci.yml/badge.svg)](https://github.com/vinayvobbili/witness/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/witness-cli)](https://pypi.org/project/witness-cli/)
 [![Python](https://img.shields.io/pypi/pyversions/witness-cli)](https://pypi.org/project/witness-cli/)
 [![License](https://img.shields.io/pypi/l/witness-cli)](https://github.com/vinayvobbili/witness/blob/main/LICENSE)

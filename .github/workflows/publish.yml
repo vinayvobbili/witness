@@ -1,0 +1,76 @@
+name: publish
+
+# Publishes to PyPI via Trusted Publishing (OIDC). No API token is stored here,
+# on PyPI, or on any machine - GitHub mints a short-lived identity per run.
+#
+# Configured once at https://pypi.org/manage/account/publishing/ with
+#   project: witness-cli   owner: vinayvobbili   repository: witness
+#   workflow: publish.yml  environment: pypi
+# after which a version tag is the whole release procedure:
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# The distribution is witness-cli because `witness` on PyPI was taken in 2017.
+# The import name and the command are still witness.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # A tag must not be able to publish something that does not pass. This is the
+  # same suite ci.yml runs; it runs again here because a tag can point at a
+  # commit CI never saw.
+  test:
+    name: Test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Floor and ceiling of the supported range.
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - run: python demo.py
+      - run: python scripts/adversarial.py
+
+  build:
+    name: Build distribution
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - run: python -m pip install --upgrade pip build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/witness-cli/
+    permissions:
+      id-token: write   # required for trusted publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

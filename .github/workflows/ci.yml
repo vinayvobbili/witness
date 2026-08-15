@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Every version the classifiers claim. A classifier is a claim about
+      # coverage, and this is where the claim is paid for.
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - name: Suite
+        run: pytest -q
+
+      # The three runnable arguments, not just the unit tests. Each one exits
+      # non-zero on its own if the gate stops behaving, so CI does not have to
+      # read their output to know.
+      - name: Demo (seven claims, each declaring its verdict in advance)
+        run: python demo.py
+      - name: Adversarial catalogue
+        run: python scripts/adversarial.py
+      - name: The long-form case
+        run: python scripts/prove.py
