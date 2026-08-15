@@ -11,6 +11,41 @@ be talked out of a correct refutation. `witness` uses a different kind of oracle
 is admitted only if a deterministic check confirms that the cited tool output really says what
 the claim says it says.**
 
+## Run it
+
+```bash
+git clone <this repo> && cd witness
+python demo.py
+```
+
+That is the whole setup. No install, no API key, no 3 GB memory image, no network, and no
+dependency outside the standard library — the fixtures are real Volatility 3 output captured
+from two SANS SRL-2018 hosts, one clean and one compromised.
+
+Three seconds later you will have watched seven claims go through the gate: the intrusion's real
+kill chain admitted with every link bound to a field, a fabricated C2 refused because no record
+contains it, a genuine citation with one digit wrong refused, a perfectly cited claim refused
+because the conclusion drawn from it is wrong, a claim held open because nobody ran the tool
+that would settle it — and the C2 that only exists once you decode for it. Then the case is
+thrown away and rebuilt from the captures alone, to the same hash.
+
+Each of those seven declares what it expects **before** the gate is asked, and the run exits
+non-zero if any of them lands the other way. A demo that narrates whatever happened goes on
+looking impressive after the thing underneath it has broken.
+
+### Where to look, by how long you have
+
+- **Three seconds, then two minutes reading it** — `python demo.py`. The argument end to end, on
+  real evidence.
+- **Ten** — the demo, then [`docs/ACCURACY.md`](docs/ACCURACY.md) for what being careful costs.
+- **Half an hour** — `python scripts/adversarial.py` for what a hostile string in a memory image
+  can make this say, then `python scripts/prove.py` for the long-form case.
+- **Reading rather than running** — `src/witness/verify.py` is the gate and
+  `src/witness/falsify.py` is the falsification matrix. Both are short enough to read in one
+  sitting, and they are where the argument actually lives.
+- **Watching rather than reading** — [`docs/DEMO.md`](docs/DEMO.md) is the shot list for the
+  three-minute recording, beat by beat, including `--pace` for pausing between them.
+
 ## How the gate works
 
 Every claim carries bindings — *record R, field F, has value V*. Before anything is written,
@@ -37,11 +72,10 @@ The nearest published approach requires a finding to cite a real tool-call ID. T
 passes for an agent that cites a genuine `psscan` run and then mis-states what row 12 said.
 `witness` compares the field value, so it does not.
 
-## Try it in thirty seconds
+## Driving it by hand
 
-No API key, no evidence image, no dependencies beyond the standard library. The fixtures are
-real Volatility 3 output captured from the SANS `base-wkstn-05` memory image — a genuinely
-compromised Windows 7 host from the SRL-2018 case.
+The tour above is one command because a stranger should not have to assemble the argument.
+Underneath it is a CLI, and every step it takes is a step you can take yourself:
 
 ```bash
 pip install -e .
@@ -50,12 +84,15 @@ witness ingest --tool netscan --input fixtures/wkstn05/netscan.txt --host base-w
 witness ingest --tool strings --input fixtures/wkstn05/strings.txt --host base-wkstn-05
 witness decode --host base-wkstn-05
 witness indicators --extract --host base-wkstn-05
-python scripts/prove.py
+witness records --kind process --where pid=3720
+witness submit --type process_present --claim "PID 3720 is rundll32.exe" \
+    --bind RECORD_ID:image_file_name=rundll32.exe --subject pid=3720
+witness report --issue
 ```
 
-`scripts/prove.py` submits thirteen findings across two hosts, shows which survive,
-renders the report and then rebuilds the entire case from the captures to check that
-it comes back identical.
+`witness demo` runs the same tour as `python demo.py` once the package is installed, and
+`scripts/prove.py` is the long-form version: thirteen claims across two hosts, each verdict
+printed binding by binding and check by check, then the report and the replay.
 
 ## What the gate catches on real evidence
 
@@ -352,10 +389,12 @@ refutation.
 
 ## Status
 
-Slices 1 to 6 of a rebuild: the store, `info` / `psscan` / `netscan` / `malfind` / `strings`
+Slices 1 to 7 of a rebuild: the store, `info` / `psscan` / `netscan` / `malfind` / `strings`
 collectors, the payload decoder, the indicator oracle, both gates, the ledger, retraction, the
-rejection log, the provenance walk, the report, replay, the adversarial catalogue, and the
-accuracy corpus. No runtime dependencies — the only bundled data is the IANA TLD list.
+rejection log, the provenance walk, the report, replay, the adversarial catalogue, the accuracy
+corpus, and the guided tour. No runtime dependencies — the only bundled data is the IANA TLD
+list, and a test parses every shipped module to keep it that way rather than trusting that
+nobody added an import.
 
 The captures that make up the shipped case are declared once, in `casefile.py`, because three
 things need the same answer to "what evidence is in here" and a list maintained in three places
@@ -419,12 +458,19 @@ is that those get marked unavailable rather than shipped.
 ## Tests
 
 ```bash
+python demo.py                  # the guided tour, no install needed
 pip install -e ".[dev]"
-pytest                          # 245 tests, 119 adversarial cases, 1,083 accuracy claims
+pytest                          # 259 tests, 119 adversarial cases, 1,083 accuracy claims
 python scripts/prove.py         # both gates on real evidence, then report and replay
 python scripts/adversarial.py   # the attack catalogue, family by family
 python scripts/accuracy.py      # precision, recall, and the reason each refusal gave
 ```
+
+The demo is in the suite too, and not only as "it exited zero". The tests check that the
+numbers it narrates are the numbers in the store it built, that the catalogue sizes it quotes
+are counted from the catalogues rather than typed into a string, that a beat landing the wrong
+way fails the run, and that a copy of this repository somewhere else on disk runs it with
+nothing installed.
 
 ## License
 

@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import demo as demo_module
 from . import report as report_module
 from .report import safe
 from .collectors import decode, indicators, rawstrings
@@ -293,10 +294,52 @@ def cmd_verify_chain(args: argparse.Namespace) -> int:
     return 1
 
 
+def _find_fixtures(explicit: str | None) -> Path | None:
+    """Where the shipped captures are, without guessing quietly.
+
+    The fixtures are evidence, not code, so they are not inside the wheel. From
+    a clone they sit next to the source; from an install they are wherever the
+    clone was left, and the caller has to say.
+    """
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_dir() else None
+    for candidate in (Path.cwd() / "fixtures", Path(__file__).resolve().parents[2] / "fixtures"):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def cmd_demo(args: argparse.Namespace) -> int:
+    fixtures = _find_fixtures(args.fixtures)
+    if fixtures is None:
+        print(
+            "cannot find the fixtures. They are captured evidence rather than code, so\n"
+            "they are not in the installed package - run this from a clone, or pass\n"
+            "--fixtures PATH pointing at the fixtures directory of one."
+        )
+        return 1
+    root = fixtures.parent
+    with tempfile.TemporaryDirectory() as tmp:
+        tour = demo_module.run(
+            fixtures,
+            store_path=Path(tmp) / "case.db",
+            root=root,
+            pace=args.pace,
+        )
+    return 0 if tour.ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="witness", description=__doc__)
     parser.add_argument("--store", default=DEFAULT_STORE, help=f"store path (default {DEFAULT_STORE})")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_demo = sub.add_parser("demo", help="the guided tour: the whole case, front to back")
+    p_demo.add_argument("--fixtures", help="path to the captured evidence (default: ./fixtures)")
+    p_demo.add_argument("--pace", type=float, default=0.0, metavar="SECONDS",
+                        help="pause between beats, for recording a screen capture")
+    p_demo.set_defaults(func=cmd_demo)
 
     p_ingest = sub.add_parser("ingest", help="parse captured tool output into records")
     p_ingest.add_argument("--tool", required=True, choices=TOOLS)
