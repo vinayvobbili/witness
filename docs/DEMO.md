@@ -20,6 +20,14 @@ git clone https://github.com/vinayvobbili/witness && cd witness
 python demo.py --pace 10
 ```
 
+Colour is on by default into a terminal and off into anything else, so a
+recording gets it without asking and a pipe never sees an escape code. If the
+capture tool is not a terminal, force it with `--color always`; if a theme
+fights the recording, `--color never` gives the plain output back, byte for
+byte. Only labels and verdicts are painted — every hash, PID and domain on
+screen is the bytes the store holds, so a viewer can still read a value off a
+frame and trust it.
+
 The run itself takes about three seconds, which is the right answer for a tool
 and the wrong one for a camera. `--pace` puts a pause after each beat and each
 section rule — thirteen of them — so `--pace 10` lands the whole thing a little

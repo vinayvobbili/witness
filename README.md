@@ -22,6 +22,10 @@ That is the whole setup. No install, no API key, no 3 GB memory image, no networ
 dependency outside the standard library — the fixtures are real Volatility 3 output captured
 from two SANS SRL-2018 hosts, one clean and one compromised.
 
+Into a terminal it colours the labels and the verdicts, and into a pipe it does not. Values are
+never painted, so a hash or a PID reads the same either way, and `--color never` returns the
+plain output byte for byte.
+
 Three seconds later you will have watched seven claims go through the gate: the intrusion's real
 kill chain admitted with every link bound to a field, a fabricated C2 refused because no record
 contains it, a genuine citation with one digit wrong refused, a perfectly cited claim refused

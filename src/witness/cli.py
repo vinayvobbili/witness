@@ -16,6 +16,7 @@ from .collectors.volatility import PLUGINS, ingest_capture
 from .falsify import REGISTRY
 from .replay import replay
 from .store import Store
+from .style import Style
 from .verify import Binding, revalidate, submit_finding
 
 DEFAULT_STORE = "witness.db"
@@ -326,6 +327,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
             store_path=Path(tmp) / "case.db",
             root=root,
             pace=args.pace,
+            style=Style.detect(args.color),
         )
     return 0 if tour.ok else 1
 
@@ -339,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     p_demo.add_argument("--fixtures", help="path to the captured evidence (default: ./fixtures)")
     p_demo.add_argument("--pace", type=float, default=0.0, metavar="SECONDS",
                         help="pause between beats, for recording a screen capture")
+    p_demo.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+                        help="colour the labels and verdicts; auto means only into a terminal")
     p_demo.set_defaults(func=cmd_demo)
 
     p_ingest = sub.add_parser("ingest", help="parse captured tool output into records")

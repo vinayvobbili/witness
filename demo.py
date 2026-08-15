@@ -25,6 +25,7 @@ if sys.version_info < (3, 10):  # pragma: no cover - checked before the imports 
     sys.exit(f"witness needs Python 3.10 or newer; this is {sys.version.split()[0]}")
 
 from witness.demo import run  # noqa: E402
+from witness.style import Style  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,17 +42,36 @@ def main(argv: list[str] | None = None) -> int:
         metavar="DIR",
         help="keep the store and the replayed copy in DIR instead of a temp dir",
     )
+    parser.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="colour the labels and verdicts; auto means only into a terminal (default auto)",
+    )
     args = parser.parse_args(argv)
+    style = Style.detect(args.color)
 
     if args.keep:
         workdir = Path(args.keep)
         workdir.mkdir(parents=True, exist_ok=True)
-        tour = run(ROOT / "fixtures", store_path=workdir / "case.db", root=ROOT, pace=args.pace)
+        tour = run(
+            ROOT / "fixtures",
+            store_path=workdir / "case.db",
+            root=ROOT,
+            pace=args.pace,
+            style=style,
+        )
         print(f"\n  store kept at {workdir / 'case.db'}")
         print(f"  witness --store {workdir / 'case.db'} findings")
     else:
         with tempfile.TemporaryDirectory() as tmp:
-            tour = run(ROOT / "fixtures", store_path=Path(tmp) / "case.db", root=ROOT, pace=args.pace)
+            tour = run(
+                ROOT / "fixtures",
+                store_path=Path(tmp) / "case.db",
+                root=ROOT,
+                pace=args.pace,
+                style=style,
+            )
 
     return 0 if tour.ok else 1
 

@@ -25,6 +25,7 @@ from typing import Any, Callable
 from . import casefile, report as report_module
 from .replay import replay
 from .store import Store
+from .style import OFF, Style
 from .verify import Binding, submit_finding
 
 ADMIT = "admitted"
@@ -35,15 +36,31 @@ REFUSE = "refused"
 WIDTH = 78
 
 
-def wrap(label: str, body: str, indent: int = 6) -> list[str]:
-    """`label  body`, folded under the body's own left margin."""
+def wrap(
+    label: str,
+    body: str,
+    indent: int = 6,
+    paint: Callable[[str], str] | None = None,
+) -> list[str]:
+    """`label  body`, folded under the body's own left margin.
+
+    `paint` is applied to the label field after folding rather than before,
+    because escape codes are bytes and `textwrap` would count them as width.
+    The field is eight columns whether it is painted or not.
+    """
+
     lead = " " * indent + label.ljust(8) + " "
-    return textwrap.wrap(
+    lines = textwrap.wrap(
         body,
         width=WIDTH,
         initial_indent=lead,
         subsequent_indent=" " * len(lead),
     ) or [lead.rstrip()]
+    if paint is not None and label:
+        first = lines[0]
+        field = first[indent : indent + 8]
+        lines[0] = first[:indent] + paint(field) + first[indent + 8 :]
+    return lines
 
 
 @dataclass(frozen=True)
@@ -256,16 +273,24 @@ def run(
     root: Path | None = None,
     pace: float = 0.0,
     out: Callable[[str], None] = print,
+    style: Style | None = None,
 ) -> Tour:
-    """The tour. Returns what it found, having narrated it on the way."""
+    """The tour. Returns what it found, having narrated it on the way.
+
+    `style` defaults to off, so a caller that captures `out` gets the same
+    bytes it always did and only the two entry points a human types decide to
+    paint anything.
+    """
+
+    paint = style or OFF
 
     def rule(title: str, subtitle: str = "") -> None:
         out("")
-        out(f"{'=' * 76}")
-        out(f"  {title}")
+        out(paint.quiet("=" * 76))
+        out(f"  {paint.heading(title)}")
         if subtitle:
-            out(f"  {subtitle}")
-        out(f"{'=' * 76}")
+            out(f"  {paint.quiet(subtitle)}")
+        out(paint.quiet("=" * 76))
         if pace:
             time.sleep(pace)
 
@@ -280,18 +305,21 @@ def run(
         store,
         fixtures,
         on_capture=lambda capture, result: out(
-            f"  {capture.host}  {capture.tool:<16} {result['records']:>4} records"
+            f"  {capture.host}  {paint.quiet(capture.tool.ljust(16))}"
+            f" {result['records']:>4} records"
             f"   sha256(output) {result['output_sha256'][:12]}..."
         ),
     )
     for host, derived in loaded["derived"].items():
         unwrapped, extracted = derived["decode"], derived["indicators"]
+        decode_col = paint.quiet("decode.unwrap".ljust(16))
+        indicator_col = paint.quiet("indicators".ljust(16))
         out(
-            f"  {host}  {'decode.unwrap':<16} {unwrapped['payloads']:>4} payloads"
+            f"  {host}  {decode_col} {unwrapped['payloads']:>4} payloads"
             f"   unwrapped from {unwrapped['blobs']} blob(s), {unwrapped['stages']} stage(s) deep"
         )
         out(
-            f"  {host}  {'indicators':<16} {extracted['indicators']:>4} indicators"
+            f"  {host}  {indicator_col} {extracted['indicators']:>4} indicators"
             f"   {extracted['in_execution_context']} of them in something that executed"
         )
     tour.records = len(store.query_records())
@@ -308,10 +336,10 @@ def run(
     )
     for number, beat in enumerate(script(store), start=1):
         out("")
-        out(f"  [{number}] {beat.title}")
-        for line in wrap("why", beat.why):
+        out(f"  {paint.heading(f'[{number}] {beat.title}')}")
+        for line in wrap("why", beat.why, paint=paint.quiet):
             out(line)
-        for line in wrap("claim", beat.claim):
+        for line in wrap("claim", beat.claim, paint=paint.quiet):
             out(line)
         verdict, finding_id = submit_finding(
             store,
@@ -327,12 +355,16 @@ def run(
         )
         result = Result(beat, verdict.accepted, detail, finding_id)
         tour.results.append(result)
-        for line in wrap("ADMITTED" if verdict.accepted else "REFUSED", detail):
+        for line in wrap(
+            "ADMITTED" if verdict.accepted else "REFUSED",
+            detail,
+            paint=lambda field: paint.verdict_badge(verdict.accepted, field),
+        ):
             out(line)
         if finding_id:
-            out(" " * 15 + f"ledger {finding_id}")
+            out(" " * 15 + paint.quiet(f"ledger {finding_id}"))
         if not result.as_scripted:
-            out(f"      OFF SCRIPT  this beat expected {beat.expect}")
+            out(f"      {paint.warning('OFF SCRIPT')}  this beat expected {beat.expect}")
         if pace:
             time.sleep(pace)
 
@@ -356,10 +388,11 @@ def run(
     out("  Nothing here is numbered from a clock or a counter, so the chain head is a")
     out("  fingerprint of the case rather than of the run.")
     out("")
-    out(f"  original head  {outcome.source_head}")
-    out(f"  replayed head  {outcome.replayed_head}")
+    out(f"  {paint.quiet('original head')}  {outcome.source_head}")
+    out(f"  {paint.quiet('replayed head')}  {outcome.replayed_head}")
     out(
-        f"  match          {outcome.head_matches}"
+        f"  {paint.quiet('match')}          "
+        f"{paint.verdict(outcome.head_matches, str(outcome.head_matches))}"
         f"   ({len(outcome.replayed_findings)} findings and"
         f" {len(outcome.replayed_rejections)} refusals came back, in order)"
     )
@@ -376,13 +409,17 @@ def run(
     rule("WHAT THIS RUN LEFT BEHIND", "every number below was read back out of the store")
     out(f"  {tour.records} records   {tour.findings} findings   {tour.rejections} refusals"
         f"   {tour.chain_entries} entries in the audit chain")
-    out(f"  chain intact: {tour.chain_ok}" + ("" if tour.chain_ok else f"  {chain_problems[:2]}"))
-    out(f"  head          {tour.head}")
+    out(
+        f"  {paint.quiet('chain intact:')} "
+        f"{paint.verdict(tour.chain_ok, str(tour.chain_ok))}"
+        + ("" if tour.chain_ok else f"  {chain_problems[:2]}")
+    )
+    out(f"  {paint.quiet('head')}          {tour.head}")
     if tour.off_script:
         out("")
         for result in tour.off_script:
             out(
-                f"  OFF SCRIPT  {result.beat.title}"
+                f"  {paint.warning('OFF SCRIPT')}  {result.beat.title}"
                 f"  expected {result.beat.expect}, got"
                 f" {'admitted' if result.admitted else 'refused'}"
             )
@@ -394,15 +431,20 @@ def run(
     out("")
     if sizes:
         out(
-            f"  python scripts/adversarial.py   {sizes['attacks']} crafted attacks,"
+            f"  {paint.heading('python scripts/adversarial.py')}"
+            f"   {sizes['attacks']} crafted attacks,"
             f" {sizes['families']} families, one invariant each"
         )
         out(
-            f"  python scripts/accuracy.py      1,000+ claims in {sizes['classes']} classes"
+            f"  {paint.heading('python scripts/accuracy.py')}"
+            f"      1,000+ claims in {sizes['classes']} classes"
             " of ordinary analytical error"
         )
-        out("  python scripts/prove.py         the long-form version of the run above")
-        out("  pytest                          the lot, as assertions")
+        out(
+            f"  {paint.heading('python scripts/prove.py')}"
+            "         the long-form version of the run above"
+        )
+        out(f"  {paint.heading('pytest')}                          the lot, as assertions")
         out("")
         out("  The two numbers above are catalogue sizes, not results. This run executed")
         out("  neither suite; those commands do, and both print the argument, not a score.")
