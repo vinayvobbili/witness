@@ -1,18 +1,50 @@
 [build-system]
-requires = ["hatchling"]
+# Pinned below 1.30: hatchling 1.30 emits Metadata-Version 2.5, which current
+# packaging/twine and PyPI's own validator reject. 2.4 is the accepted version.
+requires = ["hatchling>=1.27,<1.30"]
 build-backend = "hatchling.build"
 
 [project]
-name = "witness"
+# The distribution name is not the import name. `witness` on PyPI was taken in
+# 2017 by an unrelated project that stopped releasing that August, and a name
+# nobody uses is still a name nobody else can have. The module, the command and
+# the repository are all still `witness`; only the string you type after
+# `pip install` differs.
+name = "witness-cli"
 dynamic = ["version"]
 description = "A DFIR agent that can only report what it can prove a tool said."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
+authors = [{ name = "Vinay Vobbilichetty", email = "vinayvobbilichetty11@gmail.com" }]
+keywords = [
+    "dfir", "incident-response", "forensics", "memory-forensics", "volatility",
+    "provenance", "verification", "hallucination", "llm", "agent", "security",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    # Only the versions the suite is actually run against. A classifier is a
+    # claim about coverage, and this repository does not make those for free.
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://vinayvobbili.github.io/witness/"
+Source = "https://github.com/vinayvobbili/witness"
+Demo = "https://youtu.be/kaxrsetky3I"
+Writeup = "https://vinayvobbili.github.io/posts/witness-prove-it-or-it-doesnt-go-in-the-report/"
 
 [project.scripts]
 witness = "witness.cli:main"
@@ -22,6 +54,21 @@ path = "src/witness/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/witness"]
+
+[tool.hatch.build.targets.sdist]
+# Spelled out rather than left to the default, so that what ships in the sdist
+# is a decision. The wheel is the library; the sdist is the whole argument -
+# fixtures, the adversarial catalogue and the demo that proves the gate runs.
+include = [
+    "src/witness",
+    "tests",
+    "fixtures",
+    "scripts",
+    "docs",
+    "demo.py",
+    "README.md",
+    "LICENSE",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

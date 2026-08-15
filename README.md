@@ -2,6 +2,10 @@
 
 **A DFIR agent that can only report what it can prove a tool said.**
 
+[![PyPI](https://img.shields.io/pypi/v/witness-cli)](https://pypi.org/project/witness-cli/)
+[![Python](https://img.shields.io/pypi/pyversions/witness-cli)](https://pypi.org/project/witness-cli/)
+[![License](https://img.shields.io/pypi/l/witness-cli)](https://github.com/vinayvobbili/witness/blob/main/LICENSE)
+
 Autonomous forensics agents do not usually fail by missing evil. They fail by inventing it —
 a transposed octet in an IP, a mis-read defanged domain, a benign LOLBin called malware, a
 kernel driver called a rootkit when it was the acquisition tool.
@@ -36,6 +40,21 @@ thrown away and rebuilt from the captures alone, to the same hash.
 Each of those seven declares what it expects **before** the gate is asked, and the run exits
 non-zero if any of them lands the other way. A demo that narrates whatever happened goes on
 looking impressive after the thing underneath it has broken.
+
+### Or install it, to point at your own evidence
+
+```bash
+pip install witness-cli    # the module and the command are both `witness`
+```
+
+The two are for different things and it is worth being straight about which. The wheel carries
+the library and the CLI, so `pip install` is what you want when the evidence is yours — your
+Volatility output, your API responses, your exports. The clone carries the fixtures, the
+adversarial catalogue and `demo.py`, so it is what you want when the question is whether any of
+this works. Installing does not get you the proof, and it is not supposed to.
+
+The distribution is `witness-cli` because `witness` on PyPI has belonged since 2017 to an
+unrelated project. Nothing else changes: you `import witness` and you run `witness`.
 
 ### Where to look, by how long you have
 
