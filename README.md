@@ -88,6 +88,8 @@ witness ingest --tool netscan --input fixtures/wkstn05/netscan.txt --host base-w
 witness ingest --tool strings --input fixtures/wkstn05/strings.txt --host base-wkstn-05
 witness decode --host base-wkstn-05
 witness indicators --extract --host base-wkstn-05
+witness fields                                   # what kinds this store holds
+witness fields --kind process                    # and what those records carry
 witness records --kind process --where pid=3720
 witness submit --type process_present --claim "PID 3720 is rundll32.exe" \
     --bind RECORD_ID:image_file_name=rundll32.exe --subject pid=3720
@@ -97,6 +99,30 @@ witness report --issue
 `witness demo` runs the same tour as `python demo.py` once the package is installed, and
 `scripts/prove.py` is the long-form version: thirteen claims across two hosts, each verdict
 printed binding by binding and check by check, then the report and the replay.
+
+`witness fields` is the one worth knowing about. A binding names a field, and anything writing
+bindings — a person or an agent — will otherwise guess a name that reads well, `threat_level`
+or `verdict` or `malicious`, and be refused. Being refused is the correct outcome and a wasted
+turn. The listing is counted from the records rather than declared anywhere, because there is
+no schema: a record holds whatever the tool emitted. Four of the eleven fields on a `psscan`
+record, verbatim:
+
+```
+process  57 record(s) from 1 tool call(s)
+  exit_time            57/57  null|text  '2018-08-30 05:14:50.000000 UTC', None, +3 more
+  image_file_name      57/57  text       'FireSvc.exe', 'FireTray.exe', 'GROOVE.EXE', 'HipMgmt.exe', +31 more
+  session_id           57/57  int        0, 5
+  wow64                57/57  bool       False, True
+```
+
+Presence is a fraction because records of one kind need not agree. A flattened response has
+`indicators.1` only where there were two indicators, and a field on 2 of 3 records is the trap
+in every ragged export — it is in the listing, so it looks like part of the shape. The examples
+lead with one value of each type, so a column that advertises `null` also shows one.
+
+The listing is a map, not evidence. A field appearing here proves some record carried it, not
+that the record a claim is about does — the gate still re-reads that record, which is what lets
+this be convenient without being load-bearing.
 
 ## It was never only about memory dumps
 
@@ -536,7 +562,7 @@ is that those get marked unavailable rather than shipped.
 ```bash
 python demo.py                  # the guided tour, no install needed
 pip install -e ".[dev]"
-pytest                          # 332 tests, 120 adversarial cases, 1,083 accuracy claims
+pytest                          # 349 tests, 120 adversarial cases, 1,083 accuracy claims
 python scripts/prove.py         # both gates on real evidence, then report and replay
 python scripts/adversarial.py   # the attack catalogue, family by family
 python scripts/accuracy.py      # precision, recall, and the reason each refusal gave

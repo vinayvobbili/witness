@@ -15,6 +15,7 @@ from .collectors import decode, indicators, rawstrings, structured
 from .collectors.volatility import PLUGINS, ingest_capture
 from .falsify import REGISTRY
 from .replay import replay
+from . import shape
 from .store import Store
 from .style import Style
 from .verify import Binding, revalidate, submit_finding
@@ -139,6 +140,41 @@ def cmd_provenance(args: argparse.Namespace) -> int:
         print(f"     {argv}")
         if call["evidence_path"]:
             print(f"     evidence {call['evidence_path']}  sha256(output) {call['output_sha256'][:16]}...")
+    return 0
+
+
+def cmd_fields(args: argparse.Namespace) -> int:
+    store = Store(args.store)
+    if not args.kind:
+        found = shape.kinds(store, host=args.host)
+        width = max((len(k.kind) for k in found), default=4)
+        for item in found:
+            print(
+                f"{safe(item.kind, 64):<{width}}  {item.records} record(s)"
+                f" from {item.tool_calls} tool call(s)"
+            )
+        print(f"-- {len(found)} kind(s)")
+        return 0
+
+    described = shape.describe(store, args.kind, host=args.host)
+    if described is None:
+        known = ", ".join(k.kind for k in shape.kinds(store, host=args.host)) or "nothing"
+        print(f"no records of kind {safe(args.kind, 64)!r} here; this store holds: {known}")
+        return 1
+
+    print(
+        f"{described.kind}  {described.records} record(s)"
+        f" from {described.tool_calls} tool call(s)"
+    )
+    width = max((len(f.name) for f in described.fields), default=5)
+    types = max((len("|".join(f.types)) for f in described.fields), default=4)
+    for item in described.fields:
+        seen = f"{item.present}/{described.records}"
+        print(
+            f"  {safe(item.name, 96):<{width}}  {seen:>9}  "
+            f"{'|'.join(item.types):<{types}}  {item.values}"
+        )
+    print(f"-- {len(described.fields)} field(s)")
     return 0
 
 
@@ -397,6 +433,13 @@ def main(argv: list[str] | None = None) -> int:
     p_prov = sub.add_parser("provenance", help="walk a record back to the capture it came from")
     p_prov.add_argument("record_id")
     p_prov.set_defaults(func=cmd_provenance)
+
+    p_fields = sub.add_parser(
+        "fields", help="what the records of a kind actually carry, so a binding need not guess"
+    )
+    p_fields.add_argument("--kind", help="omit to list the kinds this store holds")
+    p_fields.add_argument("--host", help="narrow to one machine")
+    p_fields.set_defaults(func=cmd_fields)
 
     p_records = sub.add_parser("records", help="query parsed records")
     p_records.add_argument("--kind")
