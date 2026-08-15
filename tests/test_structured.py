@@ -20,7 +20,10 @@ from witness.replay import replay
 from witness.store import Store
 from witness.verify import Binding, submit_finding, verify
 
-FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "synthetic" / "reputation_lookup.json"
+SYNTHETIC = Path(__file__).resolve().parent.parent / "fixtures" / "synthetic"
+FIXTURE = SYNTHETIC / "reputation_lookup.json"
+CSV_FIXTURE = SYNTHETIC / "detections.csv"
+JSONL_FIXTURE = SYNTHETIC / "detections.jsonl"
 
 
 def read() -> str:
@@ -305,13 +308,21 @@ def test_a_response_backed_case_replays_to_the_same_head(tmp_path):
     assert len(result.replayed_rejections) == 1
 
 
-def test_replay_recovers_the_path_from_the_recorded_argv():
-    argv = structured.argv_for("reputation_lookup", "engine_verdict", "engines")
+def test_replay_recovers_the_read_options_from_the_recorded_argv():
+    argv = structured.argv_for("reputation_lookup", "engine_verdict", "engines", "json")
     assert structured.from_argv(argv) == {
         "tool": "reputation_lookup",
         "kind": "engine_verdict",
         "records_at": "engines",
+        "fmt": "json",
     }
+
+
+def test_an_argv_written_before_formats_existed_still_means_json():
+    """Additive, like the store's own migrations: an older store still replays."""
+    argv = ["witness", "ingest", "--tool", "response", "--source", "x",
+            "--kind", "x", "--records-at", "."]
+    assert structured.from_argv(argv)["fmt"] == "json"
 
 
 def test_replay_reports_an_argv_it_cannot_read():
@@ -359,3 +370,208 @@ def test_cli_reports_an_unreadable_response(tmp_path, capsys):
     ])
     assert code == 1
     assert "not readable json" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ delimited and jsonl
+#
+# Most of what a SOC gets back is not a JSON document - it is a header row and
+# some lines. The gate should not care, and these say so.
+
+
+def csv_rows(text=None):
+    return structured.parse(text if text is not None else CSV_FIXTURE.read_text(), fmt="csv").rows
+
+
+def test_the_header_row_names_the_fields():
+    rows = csv_rows()
+    assert len(rows) == 3
+    assert rows[0]["detection_id"] == "D-1001"
+    assert rows[0]["technique"] == "T1059.001"
+    assert set(rows[0]) == {
+        "detection_id", "device", "severity", "account_id",
+        "technique", "first_seen", "description",
+    }
+
+
+def test_a_quoted_cell_keeps_its_delimiter():
+    """Splitting on commas by hand would make this row two fields short."""
+    assert csv_rows()[0]["description"] == (
+        "PowerShell spawned by wmiprvse.exe, encoded command"
+    )
+
+
+def test_an_empty_cell_is_an_empty_cell_not_a_missing_field():
+    row = csv_rows()[2]
+    assert row["severity"] == ""
+    assert "severity" in row
+
+
+def test_cells_are_stored_as_text_and_not_typed_at_ingest():
+    """A delimited file carries no types. Inventing them would lose a leading zero."""
+    row = csv_rows()[0]
+    assert row["severity"] == "70"
+    assert row["account_id"] == "00417"
+
+
+def test_a_numeric_claim_still_binds_to_a_text_cell(tmp_path):
+    store = Store(tmp_path / "case.db")
+    ingest(store, CSV_FIXTURE, tool="edr_export", fmt="csv")
+    record = store.query_records(kind="edr_export", where={"detection_id": "D-1001"})[0]
+    verdict = verify(store, "Severity was 70.", [Binding(record["record_id"], "severity", 70)])
+    assert verdict.accepted, verdict.report()
+
+
+def test_a_padded_identifier_does_not_answer_to_its_unpadded_number(tmp_path):
+    """00417 is an account, not the number 417. The gate has to keep them apart."""
+    store = Store(tmp_path / "case.db")
+    ingest(store, CSV_FIXTURE, tool="edr_export", fmt="csv")
+    record = store.query_records(kind="edr_export", where={"detection_id": "D-1001"})[0]
+    wrong = verify(store, "Account 417 was involved.",
+                   [Binding(record["record_id"], "account_id", 417)])
+    assert not wrong.accepted
+    assert "record says '00417'" in wrong.refutation
+
+    right = verify(store, "Account 00417 was involved.",
+                   [Binding(record["record_id"], "account_id", "00417")])
+    assert right.accepted, right.report()
+
+
+def test_a_ragged_row_is_reported_not_shifted():
+    result = structured.parse("a,b,c\n1,2,3\n4,5\n", fmt="csv")
+    assert [row["a"] for row in result.rows] == ["1"]
+    assert len(result.skipped) == 1
+    assert "expected 3 cells, got 2" in result.skipped[0]
+
+
+def test_a_duplicated_header_name_is_fatal():
+    with pytest.raises(structured.ParseError) as exc:
+        structured.parse("id,name,id\n1,a,2\n", fmt="csv")
+    assert "'id'" in str(exc.value)
+    assert "ambiguous" in str(exc.value)
+
+
+def test_an_unnamed_column_is_fatal():
+    with pytest.raises(structured.ParseError) as exc:
+        structured.parse("id,,name\n1,x,a\n", fmt="csv")
+    assert "no name" in str(exc.value)
+
+
+def test_an_empty_capture_is_fatal():
+    with pytest.raises(structured.ParseError) as exc:
+        structured.parse("\n\n", fmt="csv")
+    assert "no header row" in str(exc.value)
+
+
+def test_a_byte_order_mark_does_not_rename_the_first_column():
+    """Otherwise every binding to `id` fails as `no such field`, for no visible reason."""
+    rows = structured.parse("﻿id,name\n1,alpha\n", fmt="csv").rows
+    assert rows[0]["id"] == "1"
+
+
+def test_tsv_does_not_treat_a_quote_as_quoting():
+    """A tab cannot appear inside a tsv field, so quotes there are just characters."""
+    rows = structured.parse('name\tnote\nalpha\t"quoted" text\n', fmt="tsv").rows
+    assert rows[0]["note"] == '"quoted" text'
+
+
+def test_the_delimiter_is_declared_and_never_sniffed():
+    """Read as tsv, a csv is one column - wrong, and wrong loudly rather than plausibly."""
+    rows = structured.parse(CSV_FIXTURE.read_text(), fmt="tsv").rows
+    assert len(rows[0]) == 1
+    assert "detection_id" not in rows[0]
+
+
+def test_jsonl_is_one_record_per_line_with_nesting_intact():
+    rows = structured.parse(JSONL_FIXTURE.read_text(), fmt="jsonl").rows
+    assert len(rows) == 3
+    assert rows[0]["device.hostname"] == "host-a.example.invalid"
+    assert rows[0]["severity"] == 70
+    assert rows[0]["quarantined"] is False
+    assert rows[2]["indicators.1"] == "T1071.001"
+    assert rows[1]["indicators"] == "[]"
+    assert rows[2]["severity"] is None
+
+
+def test_a_bad_line_costs_that_line_and_says_which():
+    text = '{"a": 1}\nnot json at all\n{"b": 2}\n'
+    result = structured.parse(text, fmt="jsonl")
+    assert len(result.rows) == 2
+    assert "line 2" in result.skipped[0]
+
+
+def test_a_jsonl_line_that_is_not_an_object_is_reported():
+    result = structured.parse('{"a": 1}\n[1, 2]\n', fmt="jsonl")
+    assert len(result.rows) == 1
+    assert "line 2 is a list" in result.skipped[0]
+
+
+def test_records_at_is_refused_for_a_format_that_has_no_inside():
+    with pytest.raises(structured.ParseError) as exc:
+        structured.parse(CSV_FIXTURE.read_text(), records_at="rows", fmt="csv")
+    assert "already a sequence of records" in str(exc.value)
+
+
+def test_an_unknown_format_is_refused():
+    with pytest.raises(structured.ParseError) as exc:
+        structured.parse("a,b\n1,2\n", fmt="xml")
+    assert "unknown format" in str(exc.value)
+
+
+def test_the_same_bytes_read_as_two_formats_are_two_tool_calls(tmp_path):
+    store = Store(tmp_path / "case.db")
+    as_csv = ingest(store, CSV_FIXTURE, tool="edr_export", fmt="csv")
+    as_tsv = ingest(store, CSV_FIXTURE, tool="edr_export", fmt="tsv")
+    assert as_csv["tool_call_id"] != as_tsv["tool_call_id"]
+
+
+def test_identical_rows_are_one_record_and_the_ingest_says_so(tmp_path):
+    """A count that quietly shrinks reads as a parse failure to whoever checks it."""
+    capture = tmp_path / "dupes.csv"
+    capture.write_text("id,verdict\n1,clean\n1,clean\n2,clean\n")
+    store = Store(tmp_path / "case.db")
+    result = ingest(store, capture, tool="edr_export", fmt="csv")
+    assert result["records"] == 2
+    assert result["duplicates"] == 1
+
+
+def test_a_delimited_case_replays_to_the_same_head(tmp_path):
+    store = Store(tmp_path / "case.db")
+    ingest(store, CSV_FIXTURE, tool="edr_export", fmt="csv", kind="detection", host="soc")
+    ingest(store, JSONL_FIXTURE, tool="edr_stream", fmt="jsonl", kind="event", host="soc")
+    record = store.query_records(kind="detection", where={"detection_id": "D-1002"})[0]
+    submit_finding(
+        store,
+        finding_type="observation",
+        claim="One detection was raised on host-b.example.invalid.",
+        bindings=[Binding(record["record_id"], "device", "host-b.example.invalid")],
+    )
+    result = replay(store, ["fixtures"], Store(tmp_path / "replayed.db"))
+    assert result.ok, result.report()
+    assert result.replayed_head == store.head()
+
+
+def test_cli_ingests_a_csv_export(tmp_path, capsys):
+    from witness.cli import main
+
+    code = main([
+        "--store", str(tmp_path / "case.db"),
+        "ingest", "--tool", "response", "--source", "edr_export", "--format", "csv",
+        "--kind", "detection", "--input", str(CSV_FIXTURE),
+    ])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "records     3 of kind detection" in out
+
+
+def test_cli_reports_a_header_it_cannot_use(tmp_path, capsys):
+    from witness.cli import main
+
+    bad = tmp_path / "bad.csv"
+    bad.write_text("id,name,id\n1,a,2\n")
+    code = main([
+        "--store", str(tmp_path / "case.db"),
+        "ingest", "--tool", "response", "--source", "edr_export", "--format", "csv",
+        "--input", str(bad),
+    ])
+    assert code == 1
+    assert "ambiguous" in capsys.readouterr().out

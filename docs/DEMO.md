@@ -101,7 +101,7 @@ people on two machines either agree on that hash or do not have the same case.
 Let the two identical hashes sit on screen for a beat.
 
 **2:50 — the close.** The two suites this run did not execute, and the fact that
-it says so: 119 crafted attacks in the catalogue, and 1,083 claims in 29 classes
+it says so: 120 crafted attacks in the catalogue, and 1,083 claims in 29 classes
 of ordinary analytical error scored for precision, recall, and whether each
 refusal named the actual defect. Then stop. Do not read the numbers out as
 results in a video that did not run them.

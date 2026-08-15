@@ -1,0 +1,4 @@
+detection_id,device,severity,account_id,technique,first_seen,description
+D-1001,host-a.example.invalid,70,00417,T1059.001,2026-08-14T09:12:00Z,"PowerShell spawned by wmiprvse.exe, encoded command"
+D-1002,host-b.example.invalid,30,00418,T1047,2026-08-14T09:15:00Z,WMI process creation
+D-1003,host-a.example.invalid,,00417,T1105,2026-08-14T09:31:00Z,Ingress tool transfer to 203.0.113.10

@@ -34,11 +34,26 @@ def coerce(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     text = str(value).strip()
-    if _INT_RE.match(text):
+    if _INT_RE.match(text) and not _padded(text):
         return int(text)
     if _HEX_RE.match(text):
         return int(text, 16)
     return text
+
+
+def _padded(text: str) -> bool:
+    """Is this an identifier that only looks like a number?
+
+    "007" is not the number 7. It is an account id, a zip code, a device tag -
+    something whose leading zeroes are part of it. Reading it as 7 would let a
+    claim of 7 verify against a record that says "007", which matters now that
+    a collector can store a column verbatim instead of typing it at ingest.
+
+    Decimal only. Hex keeps its padding by convention - 0x0e88 really is 0xe88,
+    and that is how the tools that emit offsets write them.
+    """
+    digits = text[1:] if text[:1] == "-" else text
+    return len(digits) > 1 and digits[0] == "0"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chain (

@@ -105,7 +105,7 @@ def test_a_capture_that_was_never_supplied_is_named(case, tmp_path):
 
 def test_the_capture_index_is_keyed_by_content(tmp_path):
     index = index_captures(["fixtures"])
-    assert len(index) == 8, "every capture under fixtures/, including the unused ones"
+    assert len(index) == 10, "every capture under fixtures/, including the unused ones"
     assert all(len(digest) == 64 for digest in index)
     assert {path.name for path in index.values()} == {
         "psscan.txt",
@@ -115,6 +115,8 @@ def test_the_capture_index_is_keyed_by_content(tmp_path):
         "info.txt",
         "malfind_hits.txt",
         "reputation_lookup.json",
+        "detections.csv",
+        "detections.jsonl",
     }, "two hosts' netscan captures differ, so they are two entries under one name"
 
 

@@ -134,12 +134,41 @@ refusals and should not collapse into one.
 What it does not do is form an opinion. Whether 12 of 70 engines flagging a file means the file
 is malicious is not a question this collector answers. Whether the response really said 12 is.
 
+Not everything answers in JSON. Most EDR and SIEM exports are a header row and some delimited
+lines, so `--format` also takes `csv`, `tsv` and `jsonl`:
+
+```bash
+witness ingest --tool response --source edr_export --format csv --kind detection \
+    --input fixtures/synthetic/detections.csv
+witness records --kind detection --where detection_id=D-1002
+```
+
+The format is **declared, never sniffed**. A delimiter guessed wrong does not fail — it
+produces plausible records with the wrong fields, and plausible-and-wrong is the one outcome
+this repository exists to prevent. Read as TSV, that CSV is a single column, which is wrong
+loudly rather than quietly.
+
+Delimited cells are stored as the text they are. A CSV carries no types to preserve, and
+converting at ingest would turn `00417` into `417` and lose an account id to a column that
+looked numeric. The gate coerces both sides at comparison time instead, so a claim of `70`
+still binds to a cell reading `70` — and a claim of `417` does not bind to one reading `00417`.
+That last part was a real hole: until this collector existed every field was typed at ingest,
+so nothing in the store was ever a padded identifier, and `coerce` read `007` as `7`. It no
+longer does, and the adversarial catalogue has the case.
+
+Anything wrong with a header is fatal, because it is wrong for every row: a duplicate column
+name would make a binding ambiguous, and an unnamed column is a field no claim can cite.
+Anything wrong with one row costs that row and is reported. A byte-order mark on the first
+header cell is stripped — otherwise every binding to `id` fails as *no such field* and nobody
+can see why.
+
 This one ships without a real case behind it, unlike the disk collector below, and the
 difference is worth stating rather than glossing. A disk collector with no disk evidence would
 be a claim about this case's coverage. A response collector claims only that a given document
 flattens to given fields and refuses claims that misquote them, and its fixture is exactly the
-evidence for that. The fixture is synthetic and named so it cannot be mistaken otherwise:
-`example-c2.invalid` is reserved by RFC 2606 and corroborates nothing in the case.
+evidence for that. The fixtures are synthetic and named so they cannot be mistaken otherwise:
+`example-c2.invalid` and `host-a.example.invalid` are reserved by RFC 2606, `203.0.113.10` is
+TEST-NET-3, and none of them corroborates anything in the case.
 
 ## What the gate catches on real evidence
 
@@ -317,7 +346,7 @@ evidence — it is what a crafted string in the dump can make it say.
 python scripts/adversarial.py
 ```
 
-119 cases across nine families, each family stating one invariant and attacking it
+120 cases across nine families, each family stating one invariant and attacking it
 from as many angles as the surface has: text in the image that instructs the reader,
 bindings citing records that were never there, values that are almost the value,
 subjects the bindings never proved, hostile paths, decoder abuse, direct edits to the
@@ -507,7 +536,7 @@ is that those get marked unavailable rather than shipped.
 ```bash
 python demo.py                  # the guided tour, no install needed
 pip install -e ".[dev]"
-pytest                          # 303 tests, 119 adversarial cases, 1,083 accuracy claims
+pytest                          # 332 tests, 120 adversarial cases, 1,083 accuracy claims
 python scripts/prove.py         # both gates on real evidence, then report and replay
 python scripts/adversarial.py   # the attack catalogue, family by family
 python scripts/accuracy.py      # precision, recall, and the reason each refusal gave

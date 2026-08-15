@@ -1,4 +1,4 @@
-from witness.store import Store, sha256_text
+from witness.store import Store, coerce, sha256_text
 
 
 def make_store(tmp_path) -> Store:
@@ -64,3 +64,34 @@ def test_canonical_hash_is_key_order_independent(tmp_path):
     ids = store.add_records(call, "process", [{"pid": 1, "ppid": 2}])
     stored = store.get_record(ids[0])
     assert stored["content_hash"] == sha256_text('{"pid":1,"ppid":2}')
+
+
+# `coerce` is what lets a claim written as text meet a value parsed as a number.
+# Its tolerances are the gate's tolerances, so each one is a decision, not a
+# convenience - and the padding rule is the one that keeps identifiers apart from
+# the numbers they resemble.
+
+
+def test_coerce_reads_a_number_written_as_text():
+    assert coerce("3720") == 3720
+    assert coerce("-12") == -12
+    assert coerce("  3720  ") == 3720
+    assert coerce("0xe88") == 0xE88
+
+
+def test_coerce_leaves_a_padded_number_alone():
+    """00417 is an account, 007 is an agent, and neither is arithmetic."""
+    assert coerce("00417") == "00417"
+    assert coerce("007") == "007"
+    assert coerce("-007") == "-007"
+    assert coerce("0") == 0, "a lone zero is the number zero, not padding"
+
+
+def test_a_padded_identifier_and_its_number_do_not_meet():
+    assert coerce("00417") != coerce(417)
+    assert coerce("00417") == coerce("00417")
+
+
+def test_coerce_keeps_hex_padding_readable():
+    """Tools print offsets with leading zeroes and mean the same offset."""
+    assert coerce("0x0e88") == 0xE88

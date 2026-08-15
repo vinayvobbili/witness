@@ -49,7 +49,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             return 1
         try:
             result = structured.ingest_capture(
-                store, tool=args.source, kind=args.kind, records_at=args.records_at, **common
+                store, tool=args.source, kind=args.kind, records_at=args.records_at,
+                fmt=args.format, **common,
             )
         except structured.ParseError as exc:
             print(f"cannot read {args.input}: {exc}")
@@ -59,6 +60,9 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     print(f"tool call   {result['tool_call_id']}  ({result['plugin']}, mode=replay)")
     print(f"output hash {result['output_sha256']}")
     print(f"records     {result['records']} of kind {result['kind']}")
+    if result.get("duplicates"):
+        print(f"duplicates  {result['duplicates']} row(s) repeated one already stored,"
+              f" so the count is lower than the file")
     if result["skipped"]:
         print(f"skipped     {len(result['skipped'])} unparsable rows:")
         for line in result["skipped"]:
@@ -371,7 +375,11 @@ def main(argv: list[str] | None = None) -> int:
                                          " record kind (default: the --source name)")
     p_ingest.add_argument("--records-at", metavar="PATH",
                           help=f"--tool {structured.TOOL} only: dotted path to the object or"
-                               " list holding the records (default: the whole document)")
+                               " list holding the records (json only; default: the whole document)")
+    p_ingest.add_argument("--format", choices=structured.FORMATS, default=structured.JSON,
+                          help=f"--tool {structured.TOOL} only: how to read the capture."
+                               " Declared, never sniffed - a delimiter guessed wrong produces"
+                               " plausible records with the wrong fields")
     p_ingest.set_defaults(func=cmd_ingest)
 
     p_decode = sub.add_parser("decode", help="unwrap encoded payloads found in stored records")

@@ -517,6 +517,10 @@ MUST_NOT_MATCH = (
     ("negative", "pid", -3720),
     ("scientific notation", "pid", "3.72e3"),
     ("leading zeroes as text", "pid", " 03720x"),
+    # "007" is an account id, not the number 7. Reading a padded decimal as a
+    # number is how a claim about 417 verifies against a record saying 00417,
+    # which a collector that stores a column verbatim makes reachable.
+    ("zero-padded pid", "pid", "03720"),
     ("boolean for a number", "pid", True),
 )
 
