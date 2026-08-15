@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import report as report_module
-from .collectors import decode, indicators, rawstrings
+from .collectors import decode, indicators, rawstrings, structured
 from .collectors.volatility import PLUGINS
 from .collectors.volatility import ingest_capture as ingest_volatility
 from .store import Store, sha256_text
@@ -168,6 +168,15 @@ def _replay_tool_call(into: Store, payload: dict, captures: dict[str, Path]) -> 
         result = rawstrings.ingest_capture(into, **common)
     elif tool in _VOLATILITY_TOOLS:
         result = ingest_volatility(into, plugin_name=_VOLATILITY_TOOLS[tool], **common)
+    elif tool.startswith(structured.TOOL_PREFIX):
+        # Routed by prefix rather than by a registry: a structured response can
+        # come from any service, and a replay that only recognised the ones this
+        # build had heard of would fail on a case built by a later one.
+        try:
+            options = structured.from_argv(payload["argv"])
+        except structured.ParseError as exc:
+            return Step("ingest", tool, False, str(exc))
+        result = structured.ingest_capture(into, **common, **options)
     else:
         return Step("ingest", tool, False, f"no replay handler for tool {tool!r}")
 

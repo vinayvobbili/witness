@@ -11,7 +11,7 @@ from pathlib import Path
 from . import demo as demo_module
 from . import report as report_module
 from .report import safe
-from .collectors import decode, indicators, rawstrings
+from .collectors import decode, indicators, rawstrings, structured
 from .collectors.volatility import PLUGINS, ingest_capture
 from .falsify import REGISTRY
 from .replay import replay
@@ -20,7 +20,7 @@ from .style import Style
 from .verify import Binding, revalidate, submit_finding
 
 DEFAULT_STORE = "witness.db"
-TOOLS = sorted([*PLUGINS, rawstrings.TOOL])
+TOOLS = sorted([*PLUGINS, rawstrings.TOOL, structured.TOOL])
 
 
 def _parse_binding(spec: str) -> Binding:
@@ -43,6 +43,17 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     )
     if args.tool == rawstrings.TOOL:
         result = rawstrings.ingest_capture(store, **common)
+    elif args.tool == structured.TOOL:
+        if not args.source:
+            print("--tool response needs --source naming whatever produced the json")
+            return 1
+        try:
+            result = structured.ingest_capture(
+                store, tool=args.source, kind=args.kind, records_at=args.records_at, **common
+            )
+        except structured.ParseError as exc:
+            print(f"cannot read {args.input}: {exc}")
+            return 1
     else:
         result = ingest_capture(store, plugin_name=args.tool, **common)
     print(f"tool call   {result['tool_call_id']}  ({result['plugin']}, mode=replay)")
@@ -349,8 +360,18 @@ def main(argv: list[str] | None = None) -> int:
     p_ingest.add_argument("--tool", required=True, choices=TOOLS)
     p_ingest.add_argument("--input", required=True, help="captured tool output file")
     p_ingest.add_argument("--host")
-    p_ingest.add_argument("--evidence-path")
+    p_ingest.add_argument("--evidence-path",
+                          help="what this output came from: the image, or for a response,"
+                               " the endpoint or query that was asked")
     p_ingest.add_argument("--evidence-sha256")
+    p_ingest.add_argument("--source", metavar="NAME",
+                          help=f"--tool {structured.TOOL} only: what produced the json,"
+                               f" recorded as {structured.TOOL_PREFIX}NAME")
+    p_ingest.add_argument("--kind", help=f"--tool {structured.TOOL} only:"
+                                         " record kind (default: the --source name)")
+    p_ingest.add_argument("--records-at", metavar="PATH",
+                          help=f"--tool {structured.TOOL} only: dotted path to the object or"
+                               " list holding the records (default: the whole document)")
     p_ingest.set_defaults(func=cmd_ingest)
 
     p_decode = sub.add_parser("decode", help="unwrap encoded payloads found in stored records")

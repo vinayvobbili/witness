@@ -1,0 +1,49 @@
+{
+  "query": {
+    "indicator": "example-c2.invalid",
+    "type": "domain",
+    "requested_at": "2026-08-15T00:00:00Z"
+  },
+  "data": {
+    "attributes": {
+      "reputation": -37,
+      "harmless": false,
+      "confidence": 0.87,
+      "last_analysis_stats": {
+        "malicious": 12,
+        "suspicious": 2,
+        "harmless": 54,
+        "undetected": 2,
+        "timeout": 0
+      },
+      "categories": [],
+      "registrar": null,
+      "tags": ["parked", "newly-registered"],
+      "whois": "Domain Name: EXAMPLE-C2.INVALID\nRegistrar: Reserved by RFC 2606\nCreated: 2026-08-01"
+    },
+    "relationships": {}
+  },
+  "engines": [
+    {
+      "engine": "alpha",
+      "verdict": "malicious",
+      "category": "malware",
+      "version": "4.2.1",
+      "updated": "2026-08-14"
+    },
+    {
+      "engine": "bravo",
+      "verdict": "undetected",
+      "category": null,
+      "version": "9.0",
+      "updated": "2026-08-15"
+    },
+    {
+      "engine": "charlie",
+      "verdict": "malicious",
+      "category": "phishing",
+      "version": "1.7.3",
+      "updated": "2026-08-13"
+    }
+  ]
+}

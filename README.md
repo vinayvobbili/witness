@@ -98,6 +98,49 @@ witness report --issue
 `scripts/prove.py` is the long-form version: thirteen claims across two hosts, each verdict
 printed binding by binding and check by check, then the report and the replay.
 
+## It was never only about memory dumps
+
+The gate is a field comparison against a stored record. It has never known that the records
+came from Volatility. That is a general claim, and until now the only ways into the store were
+a Volatility table and a `strings` dump, which made it look like a memory-forensics trick.
+
+`--tool response` takes JSON from whatever answered a question — a reputation service, an EDR
+query, a ticketing API — and lands it on exactly the same terms:
+
+```bash
+witness ingest --tool response --source reputation_lookup \
+    --records-at engines --kind engine_verdict \
+    --evidence-path "GET /domains/example-c2.invalid" \
+    --input fixtures/synthetic/reputation_lookup.json
+witness records --kind engine_verdict
+witness submit --type observation \
+    --claim "One engine categorised example-c2.invalid as phishing." \
+    --bind RECORD_ID:engine=charlie --bind RECORD_ID:category=phishing
+```
+
+Nesting is the only real difficulty. A binding names one field on one record, so a value three
+levels down needs a name: every leaf is flattened to its dotted path, list elements by index,
+and the same path language picks which part of a response holds the records. Without
+`--records-at` the whole document is one record, and a claim binds to
+`data.attributes.last_analysis_stats.malicious` the way it would bind to `pid`.
+
+Two rules there are deliberate. **Nothing is truncated** — the store keeps the hash of the raw
+response rather than its text, so these records are the only copy of what it said, and a
+shortened value would let a claim bind to a prefix of evidence that exists in full nowhere.
+And **an empty container is a leaf, not an absence** — `{"tags": []}` records `tags` as `[]`,
+because "the service reported no tags" and "the service was never asked" are different
+refusals and should not collapse into one.
+
+What it does not do is form an opinion. Whether 12 of 70 engines flagging a file means the file
+is malicious is not a question this collector answers. Whether the response really said 12 is.
+
+This one ships without a real case behind it, unlike the disk collector below, and the
+difference is worth stating rather than glossing. A disk collector with no disk evidence would
+be a claim about this case's coverage. A response collector claims only that a given document
+flattens to given fields and refuses claims that misquote them, and its fixture is exactly the
+evidence for that. The fixture is synthetic and named so it cannot be mistaken otherwise:
+`example-c2.invalid` is reserved by RFC 2606 and corroborates nothing in the case.
+
 ## What the gate catches on real evidence
 
 The true kill chain on `base-wkstn-05` — `WmiPrvSE.exe` (2676) to `powershell.exe` (3920) to
@@ -464,7 +507,7 @@ is that those get marked unavailable rather than shipped.
 ```bash
 python demo.py                  # the guided tour, no install needed
 pip install -e ".[dev]"
-pytest                          # 259 tests, 119 adversarial cases, 1,083 accuracy claims
+pytest                          # 303 tests, 119 adversarial cases, 1,083 accuracy claims
 python scripts/prove.py         # both gates on real evidence, then report and replay
 python scripts/adversarial.py   # the attack catalogue, family by family
 python scripts/accuracy.py      # precision, recall, and the reason each refusal gave
