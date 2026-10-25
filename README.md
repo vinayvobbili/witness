@@ -7,6 +7,14 @@
 [![Python](https://img.shields.io/pypi/pyversions/witness-cli)](https://pypi.org/project/witness-cli/)
 [![License](https://img.shields.io/pypi/l/witness-cli)](https://github.com/vinayvobbili/witness/blob/main/LICENSE)
 
+An agent's claim goes in with the tool records it cites. witness re-reads each cited field, admits
+the claim only if every value matches, and otherwise refuses it with the exact reason. One command,
+`python demo.py`, shows it on captured Volatility output: seven claims, two admitted, five refused.
+
+![witness: seven claims checked against captured Volatility output, two admitted and five refused with the reason](https://raw.githubusercontent.com/vinayvobbili/witness/main/docs/demo.gif)
+
+With sound (1¾ minutes): [docs/demo.mp4](docs/demo.mp4)
+
 Autonomous forensics agents do not usually fail by missing evil. They fail by inventing it —
 a transposed octet in an IP, a mis-read defanged domain, a benign LOLBin called malware, a
 kernel driver called a rootkit when it was the acquisition tool.
