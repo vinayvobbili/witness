@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Rebuild the README's demo video: run the demo on the fixtures, write the slides and narration, render them
+# with slidecast, and copy the result to docs/demo.mp4. See the top of scripts/demo/build.py.
+#
+#   scripts/demo/make-video [OUT] [--music DIR]
+#
+# OUT defaults to scripts/demo/out (git ignores it). Needs `pip install 'slidecast[mlx]'` (build only).
+# Set PYTHON or SLIDECAST to use other installs.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+
+out="scripts/demo/out"
+music=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --music) music=(--music "$2"); shift 2 ;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) out="$1"; shift ;;
+  esac
+done
+python="${PYTHON:-python3}"
+slidecast="${SLIDECAST:-slidecast}"
+
+"$python" scripts/demo/build.py "$out" ${music[@]+"${music[@]}"}
+"$slidecast" render "$out/reel.yaml" -o "$out/witness-demo.mp4" --poster
+cp "$out/witness-demo.mp4" docs/demo.mp4
+echo "Wrote docs/demo.mp4 (review the frames in $out, then add it to the top of the README)"

@@ -39,6 +39,8 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# Only for rebuilding the README's demo video (scripts/demo/make-video); never needed to run witness.
+video = ["slidecast[mlx]"]
 
 [project.urls]
 Homepage = "https://vinayvobbili.github.io/witness/"
