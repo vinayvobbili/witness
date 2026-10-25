@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-py*/
+uv.lock
 *.egg-info/
 dist/
 build/
