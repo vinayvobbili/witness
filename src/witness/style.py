@@ -30,7 +30,7 @@ WARN = (232, 178, 58)
 
 # Where a terminal cannot be asked for 24-bit colour, the same five roles in
 # the sixteen every terminal has. The user's own theme decides what they look
-# like, which is the correct outcome at this fidelity.
+# like, which is the correct outcome with only sixteen colours.
 BASIC = {STEEL: 96, STEEL_DIM: 36, OK: 92, NO: 91, WARN: 93}
 
 
