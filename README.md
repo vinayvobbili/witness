@@ -152,6 +152,27 @@ The listing is a map, not evidence. A field appearing here proves some record ca
 that the record a claim is about does — the gate still re-reads that record, which is what lets
 this be convenient without being load-bearing.
 
+## Decisions and what failed
+
+- **No second model as the checker.** A model that argues with the first one can be talked out
+  of a correct refutation, so the gate is plain Python that re-reads the cited field and compares
+  the value.
+- **Compare the value, not just the tool-call ID.** Requiring a real call ID passes an agent that
+  cites a genuine `psscan` run and then mis-states row 12. Checking the field value does not.
+- **The accuracy run found refusals that were right for the wrong reason.** Fifty-seven claims were
+  refused correctly but logged against a subject their bindings never proved. `Verdict.refutation`
+  now puts a binding that does not verify first, then how the finding is put together, then the
+  checks.
+- **The attack catalogue found seven defects in witness itself.** One was a 194 KB carved string
+  that inflated to 200 MB and used 1.7 GB of memory. All seven were fixed; decoding now stops at a
+  byte ceiling and says so when it hits it.
+- **Known miss: the real C2 is refused.** `www.venetodns.trade` is this intrusion's C2, but in the
+  exported captures it appears only in a raw carve, so the gate declines it. The report says so
+  rather than rounding it away.
+- **Known limit: two hosts, and no foreign address.** The accuracy numbers come from two hosts,
+  and neither connection table has a routable foreign address, so the admitting branch of
+  `external_c2` is covered by unit tests, not by this case.
+
 ## It was never only about memory dumps
 
 The gate is a field comparison against a stored record. It has never known that the records
