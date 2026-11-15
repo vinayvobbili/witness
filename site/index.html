@@ -3,8 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>witness: a DFIR agent that can only report what it can prove</title>
+<title>witness | A DFIR agent that can only report what it can prove</title>
 <meta name="description" content="witness admits an agent's forensic claim only if a deterministic check confirms the cited tool output says it. On captured Volatility output: 7 claims, 2 admitted, 5 refused with exact reasons.">
+<meta property="og:title" content="witness | A DFIR agent that can only report what it can prove">
+<meta property="og:description" content="witness admits an agent's forensic claim only if a deterministic check confirms the cited tool output says it. On captured Volatility output: 7 claims, 2 admitted, 5 refused with exact reasons.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://vinayvobbili.github.io/witness/">
+<meta property="og:image" content="https://vinayvobbili.github.io/witness/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <meta name="theme-color" content="#0e7490">
 <style>
@@ -55,6 +63,19 @@ header { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--li
   font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: color .15s, background .15s; }
 .seg button:hover { color: var(--text); }
 .seg button[aria-pressed="true"] { color: var(--text); background: var(--panel-solid); box-shadow: 0 1px 3px rgba(13, 31, 36, .15); }
+.settings { position: relative; }
+.gear { display: inline-grid; place-items: center; width: 36px; height: 36px; padding: 0; border-radius: 11px; cursor: pointer;
+  background: var(--chip); color: var(--muted); border: 1px solid transparent; transition: color .15s, background .15s; }
+.gear:hover, .gear[aria-expanded="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, var(--chip)); }
+.gear svg { transition: transform .25s; }
+.gear[aria-expanded="true"] svg { transform: rotate(60deg); }
+.gear:focus-visible, .seg button:focus-visible { outline: 3px solid var(--accent-2); outline-offset: 2px; }
+.pop { position: absolute; right: 0; top: calc(100% + 10px); z-index: 10; width: min(300px, calc(100vw - 32px)); padding: 14px;
+  background: var(--panel-solid); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow-hover); animation: rise .18s both; }
+.pop[hidden] { display: none; }
+.pop .grp + .grp { margin-top: 12px; }
+.pop .lbl { display: block; margin: 0 0 6px 2px; font-size: 11.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.pop .seg { display: flex; } .pop .seg button { flex: 1; }
 
 .hero { text-align: center; padding: 64px 0 24px; position: relative; }
 .hero h1 { margin: 0; font-size: clamp(44px, 9vw, 84px); letter-spacing: -.04em; line-height: 1; font-weight: 850; }
@@ -140,11 +161,18 @@ footer { padding: 30px 0 50px; color: var(--muted); font-size: 14px; text-align:
 <header>
   <div class="wrap bar">
     <a class="brand" href="#top"><img src="icon.svg" alt=""><b>witness</b></a>
-    <div class="seg" id="theme" role="group" aria-label="Theme">
-      <button data-v="system" aria-pressed="true">System</button><button data-v="light" aria-pressed="false">Light</button><button data-v="dark" aria-pressed="false">Dark</button>
-    </div>
-    <div class="seg" id="width" role="group" aria-label="Width">
-      <button data-v="standard" aria-pressed="true">Standard</button><button data-v="wide" aria-pressed="false">Wide</button><button data-v="full" aria-pressed="false">Full</button>
+    <div class="settings">
+      <button class="gear" id="gear" type="button" aria-label="Display settings" aria-expanded="false" aria-controls="pop"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+      <div class="pop" id="pop" role="group" aria-label="Display settings" hidden>
+        <div class="grp"><span class="lbl">Theme</span>
+          <div class="seg" id="theme" role="group" aria-label="Theme">
+            <button data-v="system" aria-pressed="true">System</button><button data-v="light" aria-pressed="false">Light</button><button data-v="dark" aria-pressed="false">Dark</button>
+          </div></div>
+        <div class="grp"><span class="lbl">Width</span>
+          <div class="seg" id="width" role="group" aria-label="Width">
+            <button data-v="standard" aria-pressed="true">Standard</button><button data-v="wide" aria-pressed="false">Wide</button><button data-v="full" aria-pressed="false">Full</button>
+          </div></div>
+      </div>
     </div>
   </div>
 </header>
@@ -243,6 +271,13 @@ function setup(id, key, fallback, apply) {
 setup("theme", "wt-theme", "system", applyTheme);
 dark.addEventListener("change", () => applyTheme(get("wt-theme") || "system"));
 setup("width", "wt-width", "standard", v => { root.dataset.width = v; });
+
+// the gear opens the display settings; an outside click or Esc closes them
+const gear = document.getElementById("gear"), pop = document.getElementById("pop");
+const showPop = open => { pop.hidden = !open; gear.setAttribute("aria-expanded", String(open)); };
+gear.addEventListener("click", () => showPop(pop.hidden));
+document.addEventListener("click", e => { if (!pop.hidden && !e.target.closest(".settings")) showPop(false); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !pop.hidden) { showPop(false); gear.focus(); } });
 
 document.getElementById("copy").addEventListener("click", e => {
   const b = e.currentTarget;

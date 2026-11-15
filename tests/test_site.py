@@ -36,6 +36,31 @@ def test_install_command_matches_readme():
     assert f'<code id="cmd">{cmd}</code>' in PAGE
 
 
+def test_title_and_link_preview():
+    title = "witness | A DFIR agent that can only report what it can prove"
+    assert f"<title>{title}</title>" in PAGE
+    assert f'<meta property="og:title" content="{title}">' in PAGE
+    desc = re.search(r'<meta name="description" content="([^"]+)">', PAGE).group(1)
+    assert f'<meta property="og:description" content="{desc}">' in PAGE
+    for tag in ('property="og:type" content="website"', 'name="twitter:card" content="summary_large_image"',
+                'property="og:url" content="https://vinayvobbili.github.io/witness/"',
+                'property="og:image" content="https://vinayvobbili.github.io/witness/og.jpg"'):
+        assert f"<meta {tag}>" in PAGE, tag
+    assert (SITE / "og.jpg").read_bytes()[:2] == b"\xff\xd8"
+
+
+def test_display_settings_live_in_a_gear_popover():
+    header = PAGE.split("<header>")[1].split("</header>")[0]
+    gear = re.search(r'<button class="gear"[^>]*>', header).group(0)
+    assert 'aria-label="Display settings"' in gear and 'aria-expanded="false"' in gear
+    pop = header.split('id="pop"')[1]
+    assert pop.index('id="theme"') < pop.index('id="width"')
+    assert pop.index('data-v="system"') < pop.index('data-v="light"') < pop.index('data-v="dark"')
+    for want in ('"wt-theme"', '"wt-width"', "root.dataset.width", "root.dataset.theme", '"Escape"', 'closest(".settings")'):
+        assert want in PAGE, want
+    assert ".gear:focus-visible" in PAGE
+
+
 def test_readme_local_links_and_images_resolve():
     targets = re.findall(r'\]\(([^)\s]+)\)|<img[^>]+src="([^"]+)"', README)
     local = [a or b for a, b in targets if not (a or b).startswith(("http", "#"))]
