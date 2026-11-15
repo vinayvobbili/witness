@@ -9,6 +9,16 @@ PAGE = (SITE / "index.html").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 
+def test_gear_popover_options_have_icons_and_keep_their_labels_and_state():
+    pop = PAGE.split('id="pop"')[1].split("</header>")[0]
+    buttons = re.findall(r'<button data-v="(\w+)" aria-pressed="(\w+)"><svg class="ic" viewBox="0 0 24 24" '
+                         r'aria-hidden="true">.*?</svg>(\w+)</button>', pop)
+    assert buttons == [("system", "true", "System"), ("light", "false", "Light"), ("dark", "false", "Dark"),
+                       ("standard", "true", "Standard"), ("wide", "false", "Wide"), ("full", "false", "Full")]
+    assert '.pop .seg button[aria-pressed="true"] .ic { color: var(--accent-2); }' in PAGE
+    assert "prefers-reduced-motion" in PAGE  # the hover wiggle stands down
+
+
 def test_external_links_open_in_a_new_tab():
     anchors = re.findall(r"<a\b[^>]*>", PAGE)
     external = [a for a in anchors if 'href="http' in a]
