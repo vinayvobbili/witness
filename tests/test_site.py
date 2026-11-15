@@ -63,8 +63,10 @@ def test_display_settings_live_in_a_gear_popover():
 
 def test_readme_local_links_and_images_resolve():
     targets = re.findall(r'\]\(([^)\s]+)\)|<img[^>]+src="([^"]+)"', README)
-    local = [a or b for a, b in targets if not (a or b).startswith(("http", "#"))]
-    assert local
+    blob = "https://github.com/vinayvobbili/witness/blob/main/"
+    local = [(a or b).removeprefix(blob) for a, b in targets if (a or b).startswith(blob)]
+    assert any(t.startswith("docs/") for t in local)
+    assert not re.search(r"\]\((?!https?:|#)", README), "relative links break on the PyPI page"
     for t in local:
         assert (ROOT / t.split("#")[0]).is_file(), t
 
@@ -77,7 +79,7 @@ def test_readme_thumbnail_exists_and_links_to_the_home_page_video():
 
 
 def test_readme_fits_one_screen_before_the_details():
-    assert len(README.splitlines()) <= 60
+    assert README.splitlines().index("## Quick start") <= 30
 
 
 def test_docs_pages_link_only_to_files_that_exist():
