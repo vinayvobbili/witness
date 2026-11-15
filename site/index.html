@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>witness: a DFIR agent that can only report what it can prove</title>
+<meta name="description" content="witness admits an agent's forensic claim only if a deterministic check confirms the cited tool output says it. On captured Volatility output: 7 claims, 2 admitted, 5 refused with exact reasons.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0e7490">
+<style>
+:root {
+  --bg: #f1f8f8; --glow-1: rgba(45, 212, 191, .30); --glow-2: rgba(251, 191, 36, .18);
+  --panel: rgba(255, 255, 255, .88); --panel-solid: #fff; --text: #0d1f24; --muted: #51676c; --line: #d6e5e6;
+  --accent: #0f766e; --accent-2: #d97706; --chip: #e5f1f1;
+  --ok: #047857; --ok-bg: rgba(16, 185, 129, .12); --no: #b45309; --no-bg: rgba(245, 158, 11, .14);
+  --shadow: 0 1px 2px rgba(13, 31, 36, .04), 0 10px 28px -16px rgba(13, 31, 36, .2);
+  --shadow-hover: 0 2px 4px rgba(13, 31, 36, .05), 0 24px 46px -20px rgba(15, 118, 110, .4);
+  --name-grad: linear-gradient(90deg, #0f766e, #d97706);
+  --grad: linear-gradient(135deg, #0d9488, #0e7490);
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #071314; --glow-1: rgba(20, 184, 166, .24); --glow-2: rgba(251, 191, 36, .12);
+  --panel: rgba(13, 30, 33, .86); --panel-solid: #0d1e21; --text: #e4f4f3; --muted: #8fb0b2; --line: #1c3739;
+  --accent: #2dd4bf; --accent-2: #fbbf24; --chip: #12292c;
+  --ok: #34d399; --ok-bg: rgba(52, 211, 153, .12); --no: #fbbf24; --no-bg: rgba(251, 191, 36, .12);
+  --shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 12px 32px -20px rgba(0, 0, 0, .9);
+  --shadow-hover: 0 1px 0 rgba(255, 255, 255, .05) inset, 0 24px 48px -20px rgba(45, 212, 191, .4);
+  --name-grad: linear-gradient(90deg, #2dd4bf, #fbbf24);
+  --grad: linear-gradient(135deg, #0d9488, #0891b2);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; min-height: 100vh; color: var(--text); overflow-x: hidden;
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  background: radial-gradient(1100px 600px at 8% -12%, var(--glow-1), transparent 62%),
+    radial-gradient(900px 540px at 102% -6%, var(--glow-2), transparent 60%), var(--bg);
+  background-attachment: fixed; -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); text-underline-offset: 3px; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+:root[data-width="wide"] .wrap { max-width: 1600px; }
+:root[data-width="full"] .wrap { max-width: none; padding: 0 32px; }
+
+header { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-solid) 72%, transparent); backdrop-filter: saturate(1.5) blur(16px);
+  -webkit-backdrop-filter: saturate(1.5) blur(16px); }
+.bar { display: flex; gap: 10px; align-items: center; padding-top: 10px; padding-bottom: 10px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 800; font-size: 19px; letter-spacing: -.02em;
+  margin-right: auto; color: var(--text); text-decoration: none; }
+.brand img { width: 26px; height: 26px; border-radius: 7px; }
+.brand b, .grad { background: var(--name-grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.seg { display: inline-flex; gap: 2px; padding: 3px; background: var(--chip); border-radius: 11px; }
+.seg button { background: none; border: 0; color: var(--muted); padding: 5px 10px; border-radius: 8px;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: color .15s, background .15s; }
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { color: var(--text); background: var(--panel-solid); box-shadow: 0 1px 3px rgba(13, 31, 36, .15); }
+
+.hero { text-align: center; padding: 64px 0 24px; position: relative; }
+.hero h1 { margin: 0; font-size: clamp(44px, 9vw, 84px); letter-spacing: -.04em; line-height: 1; font-weight: 850; }
+.hero .tag { margin: 14px 0 0; font-size: clamp(20px, 3.4vw, 30px); font-weight: 700; letter-spacing: -.02em; }
+.hero p.what { margin: 18px auto 0; max-width: 660px; color: var(--muted); font-size: 18px; }
+.cta { display: flex; gap: 12px; justify-content: center; align-items: stretch; flex-wrap: wrap; margin-top: 28px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 13px; font: inherit;
+  font-weight: 650; text-decoration: none; cursor: pointer; border: 1px solid var(--line); color: var(--text);
+  background: var(--panel-solid); transition: transform .18s, box-shadow .18s; }
+a.btn[target]::after { content: "\2197"; font-weight: 700; }
+.btn:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); }
+.install { display: inline-flex; align-items: center; gap: 10px; padding: 8px 8px 8px 18px; border-radius: 13px; max-width: 100%;
+  border: 2px solid transparent; box-shadow: 0 10px 30px -12px var(--accent);
+  background: linear-gradient(var(--panel-solid), var(--panel-solid)) padding-box, var(--grad) border-box; }
+.install code { font: 600 15px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+.install button { border: 0; border-radius: 9px; padding: 8px 14px; cursor: pointer; font: inherit; font-weight: 650;
+  font-size: 14px; background: var(--chip); color: var(--text); transition: background .15s; }
+.install button:hover { background: var(--line); }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 30px 0 10px; text-align: left; }
+.tile { border-radius: 16px; padding: 16px 18px; color: #fff; box-shadow: var(--shadow); animation: rise .6s both; }
+.tile b { display: block; font-size: 30px; letter-spacing: -.02em; line-height: 1.1; }
+.tile span { font-size: 13px; opacity: .94; }
+.tile:nth-child(1) { background: linear-gradient(135deg, #0d9488, #0e7490); }
+.tile:nth-child(2) { background: linear-gradient(135deg, #059669, #0d9488); animation-delay: .08s; }
+.tile:nth-child(3) { background: linear-gradient(135deg, #d97706, #b45309); animation-delay: .16s; }
+.tile:nth-child(4) { background: linear-gradient(135deg, #0e7490, #155e75); animation-delay: .24s; }
+
+section { padding: 34px 0; scroll-margin-top: 70px; }
+h2 { margin: 0 0 18px; font-size: clamp(24px, 4vw, 34px); letter-spacing: -.03em; }
+.lead { margin: -8px 0 18px; color: var(--muted); }
+.video { border-radius: 20px; overflow: hidden; border: 1px solid var(--line); box-shadow: var(--shadow-hover);
+  background: var(--panel-solid); max-width: 960px; margin: 0 auto; }
+.video video { display: block; width: 100%; height: auto; background: #071314; }
+
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 22px; box-shadow: var(--shadow);
+  transition: transform .2s, box-shadow .2s, border-color .2s; animation: rise .6s both; }
+.card:hover { transform: translateY(-4px); box-shadow: var(--shadow-hover); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.card:nth-child(2) { animation-delay: .08s; } .card:nth-child(3) { animation-delay: .16s; }
+.card h3 { margin: 10px 0 6px; font-size: 20px; letter-spacing: -.01em; }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+.num { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: #fff; font-weight: 750; background: var(--grad); }
+:where(code:not(#cmd)) { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88em;
+  background: var(--chip); color: var(--text); padding: 1px 6px; border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); overflow-wrap: anywhere; }
+
+.claims { display: grid; gap: 10px; }
+.claim { display: grid; grid-template-columns: 96px 1fr; gap: 14px; align-items: start; padding: 14px 16px; background: var(--panel);
+  border: 1px solid var(--line); border-left-width: 5px; border-radius: 14px; box-shadow: var(--shadow); animation: rise .5s both;
+  transition: transform .18s, box-shadow .18s; }
+.claim:hover { transform: translateX(3px); box-shadow: var(--shadow-hover); }
+.claim.ok { border-left-color: var(--ok); } .claim.no { border-left-color: var(--no); }
+.verdict { display: inline-block; text-align: center; font-size: 12px; font-weight: 800; letter-spacing: .06em; padding: 4px 8px; border-radius: 999px; }
+.ok .verdict { color: var(--ok); background: var(--ok-bg); } .no .verdict { color: var(--no); background: var(--no-bg); }
+.claim p { margin: 0; overflow-wrap: anywhere; }
+.claim .why { margin-top: 4px; font-size: 14px; color: var(--muted); }
+.claim:nth-child(2) { animation-delay: .05s; } .claim:nth-child(3) { animation-delay: .1s; } .claim:nth-child(4) { animation-delay: .15s; }
+.claim:nth-child(5) { animation-delay: .2s; } .claim:nth-child(6) { animation-delay: .25s; } .claim:nth-child(7) { animation-delay: .3s; }
+.note { margin-top: 14px; color: var(--muted); font-size: 14px; }
+
+.links { display: flex; flex-wrap: wrap; gap: 10px; }
+.links a, .maker a { display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 999px; background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line)); font-weight: 600; color: var(--text); text-decoration: none;
+  transition: transform .18s, box-shadow .18s; }
+.links a::after, .maker a::after { content: "\2197"; color: var(--accent); font-weight: 700; }
+.links a:hover, .maker a:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); }
+.maker { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 12px 0 16px; }
+.maker a { padding: 7px 14px; font-size: 14px; }
+a:focus-visible, button:focus-visible { outline: 3px solid var(--accent-2); outline-offset: 3px; }
+.made { font-weight: 650; color: var(--text); }
+footer { padding: 30px 0 50px; color: var(--muted); font-size: 14px; text-align: center; }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+@media (max-width: 560px) {
+  .hero { padding-top: 40px; } .install code { font-size: 13px; }
+  .claim { grid-template-columns: 1fr; gap: 8px; } .verdict { justify-self: start; }
+  .seg button { padding: 5px 8px; font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap bar">
+    <a class="brand" href="#top"><img src="icon.svg" alt=""><b>witness</b></a>
+    <div class="seg" id="theme" role="group" aria-label="Theme">
+      <button data-v="system" aria-pressed="true">System</button><button data-v="light" aria-pressed="false">Light</button><button data-v="dark" aria-pressed="false">Dark</button>
+    </div>
+    <div class="seg" id="width" role="group" aria-label="Width">
+      <button data-v="standard" aria-pressed="true">Standard</button><button data-v="wide" aria-pressed="false">Wide</button><button data-v="full" aria-pressed="false">Full</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap" id="top">
+  <div class="hero">
+    <h1 class="grad">witness</h1>
+    <p class="tag grad">A DFIR agent that can only report what it can prove a tool said.</p>
+    <p class="what">Forensics agents fail by inventing evil. witness admits a claim only if a deterministic check confirms the cited tool output says it, and refuses the rest with the exact reason.</p>
+    <div class="cta">
+      <div class="install"><code id="cmd">pip install witness-cli</code><button id="copy" type="button">Copy</button></div>
+      <a class="btn" target="_blank" rel="noopener" href="https://github.com/vinayvobbili/witness">GitHub</a>
+    </div>
+    <div class="tiles">
+      <div class="tile"><b>7</b><span>claims checked</span></div>
+      <div class="tile"><b>2</b><span>admitted</span></div>
+      <div class="tile"><b>5</b><span>refused, each with a reason</span></div>
+      <div class="tile"><b>0</b><span>language models in the gate</span></div>
+    </div>
+  </div>
+
+  <section id="demo">
+    <h2>Watch it (1&frac34; minutes)</h2>
+    <div class="video"><video controls playsinline preload="none" poster="poster.jpg" src="demo.mp4"></video></div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="card"><span class="num">1</span><h3>Claim with citations</h3>
+        <p>The agent submits a claim and the tool records it cites: <code>record</code>, <code>field</code>, <code>value</code>.</p></div>
+      <div class="card"><span class="num">2</span><h3>Re-read, don't trust</h3>
+        <p>A plain-Python verifier re-reads each cited field from the hashed, append-only store and compares the value exactly.</p></div>
+      <div class="card"><span class="num">3</span><h3>Admit or refuse</h3>
+        <p>Every binding matches and the conclusion survives a falsification check: it goes in the ledger. Anything else is refused, with the reason on record.</p></div>
+    </div>
+  </section>
+
+  <section id="result">
+    <h2>The result: 7 claims, 2 admitted, 5 refused</h2>
+    <p class="lead">Captured Volatility 3 output from two hosts, one clean and one compromised. Each claim states its expected verdict before the gate runs.</p>
+    <div class="claims">
+      <div class="claim ok"><span class="verdict">ADMITTED</span><div><p>The kill chain: WmiPrvSE.exe spawned powershell.exe, which spawned powershell.exe, which spawned rundll32.exe.</p><p class="why">6 bindings re-read and matched. A gate that refuses everything is an off switch.</p></div></div>
+      <div class="claim no"><span class="verdict">REFUSED</span><div><p>The host beaconed to external C2 185.220.101.5.</p><p class="why">No such record in the store: an invented indicator.</p></div></div>
+      <div class="claim no"><span class="verdict">REFUSED</span><div><p>rundll32.exe was spawned by powershell.exe (1233).</p><p class="why">The record says 1332, the claim asserts 1233. A genuine citation with one digit wrong.</p></div></div>
+      <div class="claim no"><span class="verdict">REFUSED</span><div><p>svchost.exe beaconed to external C2 at 172.16.4.10:8080.</p><p class="why">Every binding verifies, but the address is not publicly routable, so the conclusion is wrong.</p></div></div>
+      <div class="claim no"><span class="verdict">REFUSED</span><div><p>rundll32.exe contains injected code.</p><p class="why">windows.malfind has not been run, so the claim is held and the missing tool is named.</p></div></div>
+      <div class="claim no"><span class="verdict">REFUSED</span><div><p>The host beaconed to external C2 www.venetodns.trade.</p><p class="why">The name is in the image but not in anything that executed. Attribute it, then resubmit.</p></div></div>
+      <div class="claim ok"><span class="verdict">ADMITTED</span><div><p>The in-memory PowerShell stager carries shellcode that beacons to a decoded C2 domain.</p><p class="why">The domain only exists two layers down, once the payload is decoded.</p></div></div>
+    </div>
+    <p class="note">Then the case is thrown away and rebuilt from the captures alone, to the same hash.</p>
+  </section>
+
+  <section id="links">
+    <h2>Read more</h2>
+    <div class="links">
+      <a target="_blank" rel="noopener" href="https://github.com/vinayvobbili/witness">GitHub</a>
+      <a target="_blank" rel="noopener" href="https://pypi.org/project/witness-cli/">PyPI</a>
+      <a target="_blank" rel="noopener" href="https://github.com/vinayvobbili/witness/blob/main/docs/how-it-works.md">How it works</a>
+      <a target="_blank" rel="noopener" href="https://github.com/vinayvobbili/witness/blob/main/docs/decisions.md">Decisions and what failed</a>
+      <a target="_blank" rel="noopener" href="https://github.com/vinayvobbili/witness/blob/main/docs/ACCURACY.md">Accuracy</a>
+      <a target="_blank" rel="noopener" href="https://github.com/vinayvobbili/witness/blob/main/docs/usage.md">Using witness</a>
+    </div>
+  </section>
+</main>
+<footer class="wrap">
+  <div class="made">Made by Vinay Vobbilichetty</div>
+  <div class="maker">
+    <a target="_blank" rel="noopener" href="https://www.linkedin.com/in/vinay-vobbilichetty/"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.03-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.12 2.06 2.06 0 0 1 0 4.12zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z"/></svg>LinkedIn</a>
+    <a target="_blank" rel="noopener" href="https://github.com/vinayvobbili"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.26.8-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.19.7.8.58A12 12 0 0 0 12 .3"/></svg>GitHub</a>
+  </div>
+  <div>witness is open source under the MIT license.</div>
+</footer>
+
+<script>
+const root = document.documentElement;
+const get = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const put = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const dark = matchMedia("(prefers-color-scheme: dark)");
+
+function applyTheme(v) {
+  root.dataset.theme = v === "system" ? (dark.matches ? "dark" : "light") : v;
+}
+function setup(id, key, fallback, apply) {
+  const box = document.getElementById(id);
+  const set = v => {
+    box.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === v)));
+    apply(v);
+  };
+  box.addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (b) { put(key, b.dataset.v); set(b.dataset.v); }
+  });
+  set(get(key) || fallback);
+}
+setup("theme", "wt-theme", "system", applyTheme);
+dark.addEventListener("change", () => applyTheme(get("wt-theme") || "system"));
+setup("width", "wt-width", "standard", v => { root.dataset.width = v; });
+
+document.getElementById("copy").addEventListener("click", e => {
+  const b = e.currentTarget;
+  const done = () => { b.textContent = "Copied"; setTimeout(() => { b.textContent = "Copy"; }, 1500); };
+  const text = document.getElementById("cmd").textContent;
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, () => {});
+});
+</script>
+</body>
+</html>
