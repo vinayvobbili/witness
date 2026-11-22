@@ -54,9 +54,10 @@ def test_title_and_link_preview():
     assert f'<meta property="og:description" content="{desc}">' in PAGE
     for tag in ('property="og:type" content="website"', 'name="twitter:card" content="summary_large_image"',
                 'property="og:url" content="https://vinayvobbili.github.io/witness/"',
-                'property="og:image" content="https://vinayvobbili.github.io/witness/og.jpg"'):
+                # ?v= is bumped whenever og.jpg changes: LinkedIn and others cache a card by its image URL.
+                'property="og:image" content="https://vinayvobbili.github.io/witness/og.jpg?v=2"'):
         assert f"<meta {tag}>" in PAGE, tag
-    for tag in ('name="twitter:image" content="https://vinayvobbili.github.io/witness/og.jpg"',
+    for tag in ('name="twitter:image" content="https://vinayvobbili.github.io/witness/og.jpg?v=2"',
                 'property="og:image:width" content="1200"', 'property="og:image:height" content="630"'):
         assert f"<meta {tag}>" in PAGE, tag
     assert re.search(r'<meta property="og:image:alt" content="[^"]+">', PAGE)
