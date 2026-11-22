@@ -56,7 +56,16 @@ def test_title_and_link_preview():
                 'property="og:url" content="https://vinayvobbili.github.io/witness/"',
                 'property="og:image" content="https://vinayvobbili.github.io/witness/og.jpg"'):
         assert f"<meta {tag}>" in PAGE, tag
-    assert (SITE / "og.jpg").read_bytes()[:2] == b"\xff\xd8"
+    for tag in ('name="twitter:image" content="https://vinayvobbili.github.io/witness/og.jpg"',
+                'property="og:image:width" content="1200"', 'property="og:image:height" content="630"'):
+        assert f"<meta {tag}>" in PAGE, tag
+    assert re.search(r'<meta property="og:image:alt" content="[^"]+">', PAGE)
+    assert re.search(r'<meta name="twitter:image:alt" content="[^"]+">', PAGE)
+    og = (SITE / "og.jpg").read_bytes()
+    assert og[:2] == b"\xff\xd8"
+    # The card is 1200x630: read the size from the JPEG's start-of-frame marker (no imaging library needed).
+    sof = re.search(rb"\xff[\xc0\xc2]\x00.\x08(..)(..)", og, re.S)
+    assert (int.from_bytes(sof.group(2), "big"), int.from_bytes(sof.group(1), "big")) == (1200, 630)
 
 
 def test_display_settings_live_in_a_gear_popover():
